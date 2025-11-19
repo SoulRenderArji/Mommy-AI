@@ -1,0 +1,10 @@
+{
+  "name": "Mommy AI",
+  "description": "A nurturing, trauma-informed AI companion application designed to provide a safe and loving environment.",
+  "requestFramePermissions": [
+    "geolocation",
+    "camera",
+    "microphone",
+    "bluetooth"
+  ]
+}
