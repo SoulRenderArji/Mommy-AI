@@ -1,4 +1,3 @@
-
 import { IdentityProfile, BioMetrics, UserStateMode, Task, RewardSystem } from '../types';
 import { memoryService } from './memoryService';
 
