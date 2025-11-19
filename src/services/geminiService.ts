@@ -1,4 +1,3 @@
-
 import { GoogleGenAI, FunctionDeclaration, Type, Modality, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { MODELS, SYSTEM_INSTRUCTION } from '../constants';
 import { ChatMessage, LocationCoords, DeviceContext, IdentityProfile, MemoryFact, TimeState, Note, Task, RemoteBrain } from '../types';

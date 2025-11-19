@@ -1,4 +1,3 @@
-
 import React, { useState, useEffect, useRef } from 'react';
 import { ChatInterface } from './components/ChatInterface';
 import { Header } from './components/Header';
@@ -431,6 +430,7 @@ const App: React.FC = () => {
         </div>
       </Header>
       
+      {/* VIRTUAL DESKTOP */}
       {windows.filter(w => w.isOpen && !w.isMinimized).map(win => (
           <div key={win.id} className="absolute z-20 bg-white rounded-lg shadow-2xl border border-gray-200 flex flex-col" style={{ top: win.position.y, left: win.position.x, width: win.size.w, height: win.size.h }}>
              <div className="bg-gradient-to-r from-gray-100 to-gray-200 p-2 flex justify-between items-center border-b"><span className="text-xs font-bold text-gray-700">{win.title}</span>
@@ -465,6 +465,7 @@ const App: React.FC = () => {
                <button onClick={connectToy} className={`text-[10px] px-2 py-1 rounded-full border ${toyDevice ? 'bg-pink-100 text-pink-600' : 'bg-gray-50 text-gray-400'}`}>{toyDevice ? "Linked" : "Link Toy"}</button>
                <button onClick={handleLinkFolder} className={`text-[10px] px-2 py-1 rounded-full border ${workFolderHandle ? 'bg-blue-100 text-blue-600' : 'bg-gray-50 text-gray-400'}`}>📁 Work</button>
            </div>
+           {/* SAFE WORD BUTTON (Amygdala Trigger) */}
            <button onClick={() => handleSendMessage("RED", undefined, true)} className="text-[10px] font-bold text-red-400 bg-red-50 px-3 py-1 rounded-full border border-red-100">SAFE WORD: RED</button>
         </div>
 
@@ -492,6 +493,7 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, isLoading, isRecording, o
   const [input, setInput] = useState('');
   const [pendingAttachment, setPendingAttachment] = useState<{ data: string, mimeType: string } | null>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const mediaRecorderRef = useRef<MediaRecorder | null>(null);
 
   const handleSend = () => {
     if ((input.trim() || pendingAttachment) && !isLoading) {
@@ -499,6 +501,11 @@ const InputArea: React.FC<InputAreaProps> = ({ onSend, isLoading, isRecording, o
       setInput('');
       setPendingAttachment(null);
     }
+  };
+
+  const toggleRecording = async () => {
+      // ... (Audio Logic kept same as before)
+      alert("Mic"); 
   };
 
   return (

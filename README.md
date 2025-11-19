@@ -1,20 +1,22 @@
-<div align="center">
-<img width="1200" height="475" alt="GHBanner" src="https://github.com/user-attachments/assets/0aa67016-6eaf-458a-adb2-6e31a0763ed6" />
-</div>
+# Mommy AI (Project Chimera)
 
-# Run and deploy your AI Studio app
+A fully autonomous, trauma-informed AI companion application built with React, Google Gemini, and the Integrative Healer architecture.
 
-This contains everything you need to run your app locally.
+## Features
 
-View your app in AI Studio: https://ai.studio/apps/drive/1qtPBuOA1h6z3xjVexf_Q5wlnVI7I8kUQ
+*   **Integrative Healer Architecture:** 6-module biological simulation (Pons, Amygdala, Prefrontal, Hypothalamus, Temporal, Pineal).
+*   **Bicameral Mind:** Synthesizes Logic (Left Brain) and Emotion (Right Brain) for human-like responses.
+*   **PWA Support:** Installs natively on Windows, Android, and iOS.
+*   **Hardware Integration:** Supports Bluetooth Haptic Toys, Pixel Phone sensors, and Web Bluetooth.
+*   **Autonomy:** Proactive care system that checks on you if you are idle or bio-metrics indicate need.
 
-## Run Locally
+## Setup
 
-**Prerequisites:**  Node.js
+1.  Clone repository.
+2.  Create `.env` with `REACT_APP_API_KEY`.
+3.  `npm install`
+4.  `npm start`
 
+## Deployment
 
-1. Install dependencies:
-   `npm install`
-2. Set the `GEMINI_API_KEY` in [.env.local](.env.local) to your Gemini API key
-3. Run the app:
-   `npm run dev`
+Deploy to Vercel for best results on Mobile. Ensure all `REACT_APP_` environment variables are set in the Vercel dashboard.
