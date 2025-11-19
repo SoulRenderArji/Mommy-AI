@@ -1,3 +1,4 @@
+
 import { GoogleGenAI, FunctionDeclaration, Type, Modality, HarmCategory, HarmBlockThreshold } from "@google/genai";
 import { MODELS, SYSTEM_INSTRUCTION } from '../constants';
 import { ChatMessage, LocationCoords, DeviceContext, IdentityProfile, MemoryFact, TimeState, Note, Task, RemoteBrain } from '../types';
@@ -513,10 +514,10 @@ export const generateResponse = async (
     // If we have synced remote data, we prepend it to the prompt logic
     let customDirectives = "";
     if (remoteBrain) {
-        if (remoteBrain.pons_identity) customDirectives += `\n[PONS IDENTITY OVERRIDE]: ${remoteBrain.pons_identity}`;
-        if (remoteBrain.amygdala_safety) customDirectives += `\n[AMYGDALA SAFETY PROTOCOL]: ${remoteBrain.amygdala_safety}`;
-        if (remoteBrain.prefrontal_tasks) customDirectives += `\n[PREFRONTAL TASKS]: ${remoteBrain.prefrontal_tasks}`;
-        if (remoteBrain.temporal_social) customDirectives += `\n[TEMPORAL SOCIAL]: ${remoteBrain.temporal_social}`;
+        if (remoteBrain.pons_identity) customDirectives += `\n[REMOTE NODE: CORE IDENTITY (PONS)]:\n${remoteBrain.pons_identity}`;
+        if (remoteBrain.amygdala_safety) customDirectives += `\n[REMOTE NODE: SAFETY PROTOCOL (AMYGDALA)]:\n${remoteBrain.amygdala_safety}`;
+        if (remoteBrain.prefrontal_planner) customDirectives += `\n[REMOTE NODE: EXECUTIVE PLANNER (PREFRONTAL)]:\n${remoteBrain.prefrontal_planner}`;
+        if (remoteBrain.temporal_tone) customDirectives += `\n[REMOTE NODE: SOCIAL TONE (TEMPORAL)]:\n${remoteBrain.temporal_tone}`;
         console.log("Injecting Remote Brain Nodes into context.");
     }
 

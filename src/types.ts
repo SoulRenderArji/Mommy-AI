@@ -72,10 +72,11 @@ export interface BrainNodeConfig {
 }
 
 export interface RemoteBrain {
-    pons_identity: string; // Core Persona
-    amygdala_safety: string; // Safety Protocol
-    prefrontal_tasks: string; // Executive Function
-    temporal_social: string; // Tone/Communication
+    // Integrative Healer Nodes
+    pons_identity: string;       // Core Persona (core-identity)
+    amygdala_safety: string;     // Safety Protocol (safety-protocol)
+    prefrontal_planner: string;  // Executive Function (executive-planner)
+    temporal_tone: string;       // Social Logic (adaptive-tone-modifier)
     lastSynced: Date;
 }
 

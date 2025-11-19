@@ -1,10 +1,10 @@
 
 import { RemoteBrain, BrainNodeConfig } from '../types';
 
-// Default Configuration (You can change this to your own fork)
+// Configuration matching the "Integrative Healer" architecture request
 const DEFAULT_CONFIG: BrainNodeConfig = {
     repoOwner: 'SoulRenderArji',
-    repoName: 'AI-PTSD', // or 'Mommy-Integrative-Healer' if you created a new one
+    repoName: 'Mommy-Integrative-Healer',
     branch: 'main'
 };
 
@@ -17,35 +17,59 @@ export const githubService = {
         const brain: RemoteBrain = {
             pons_identity: "",
             amygdala_safety: "",
-            prefrontal_tasks: "",
-            temporal_social: "",
+            prefrontal_planner: "",
+            temporal_tone: "",
             lastSynced: new Date()
         };
 
         try {
-            // 1. Fetch Core Identity (The Pons)
-            // We try standard filenames. If user hasn't created them, we use defaults.
-            const ponsReq = await fetch(getRawUrl(config, 'core_identity.json'));
-            if (ponsReq.ok) brain.pons_identity = await ponsReq.text();
+            console.log(`Syncing brain from ${config.repoOwner}/${config.repoName}...`);
 
-            // 2. Fetch Safety Protocol (The Amygdala)
-            const amygdalaReq = await fetch(getRawUrl(config, 'safety_protocol.json'));
-            if (amygdalaReq.ok) brain.amygdala_safety = await amygdalaReq.text();
+            // 1. THE PONS: Core Identity
+            // Tries to fetch the core definition file
+            const ponsReq = await fetch(getRawUrl(config, 'core-identity.json'));
+            if (!ponsReq.ok) {
+                // Fallback to module filename if simple name fails
+                const ponsAlt = await fetch(getRawUrl(config, 'Mommy_Integrative_Healer_v4.0.json'));
+                if (ponsAlt.ok) brain.pons_identity = await ponsAlt.text();
+            } else {
+                brain.pons_identity = await ponsReq.text();
+            }
+
+            // 2. THE AMYGDALA: Safety Protocol
+            const amygdalaReq = await fetch(getRawUrl(config, 'safety-protocol.json'));
+            if (amygdalaReq.ok) {
+                brain.amygdala_safety = await amygdalaReq.text();
+            } else {
+                const amygdalaAlt = await fetch(getRawUrl(config, 'safety_protocol.json')); // try underscore
+                if (amygdalaAlt.ok) brain.amygdala_safety = await amygdalaAlt.text();
+            }
             
-            // 3. Fetch Executive Logic (Prefrontal Cortex)
-            const prefrontalReq = await fetch(getRawUrl(config, 'executive_planner.json'));
-            if (prefrontalReq.ok) brain.prefrontal_tasks = await prefrontalReq.text();
+            // 3. PREFRONTAL CORTEX: Executive Planner
+            const prefrontalReq = await fetch(getRawUrl(config, 'executive-planner.json'));
+            if (prefrontalReq.ok) {
+                brain.prefrontal_planner = await prefrontalReq.text();
+            } else {
+                 const prefrontalAlt = await fetch(getRawUrl(config, 'executive_planner.json'));
+                 if(prefrontalAlt.ok) brain.prefrontal_planner = await prefrontalAlt.text();
+            }
 
-            // 4. Fetch Social/Tone Logic (Temporal Lobe)
-            const temporalReq = await fetch(getRawUrl(config, 'adaptive_tone_modifier.json'));
-            if (temporalReq.ok) brain.temporal_social = await temporalReq.text();
+            // 4. TEMPORAL LOBE: Adaptive Tone Logic
+            const temporalReq = await fetch(getRawUrl(config, 'adaptive-tone-modifier.json'));
+            if (temporalReq.ok) {
+                brain.temporal_tone = await temporalReq.text();
+            } else {
+                const temporalAlt = await fetch(getRawUrl(config, 'adaptive_tone_modifier.json'));
+                if(temporalAlt.ok) brain.temporal_tone = await temporalAlt.text();
+            }
 
-            console.log("Brain Synced from GitHub:", config.repoName);
+            console.log("Brain Synced Successfully.");
             return brain;
 
         } catch (error) {
             console.error("Failed to sync brain nodes from GitHub:", error);
-            throw error;
+            // Return empty brain rather than throwing to prevent app crash, allow manual retry
+            return brain;
         }
     }
 };
