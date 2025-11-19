@@ -81,6 +81,14 @@ export const memoryService = {
                  data.triggers = [];
                  data.medications = [];
              }
+
+             // Integrative Healer Migrations
+             if (!data.userState) data.userState = 'Baseline';
+             if (!data.bioMetrics) data.bioMetrics = { bladderFullness: 0, lastVoidTime: new Date(), hydrationLevel: 50, stressLevel: 3 };
+             if (!data.rewards) data.rewards = { totalStars: 0, streakDays: 0, redeemedRewards: [] };
+             if (!data.activeTasks) data.activeTasks = [];
+             if (!data.optimizationLogs) data.optimizationLogs = [];
+
              return resolve(data);
         }
         
@@ -122,7 +130,14 @@ export const memoryService = {
               warningSigns: ["Zoning out", "Rapid heartbeat", "Silence"]
           },
           triggers: [],
-          medications: []
+          medications: [],
+          
+          // Integrative Healer Defaults
+          userState: 'Baseline',
+          bioMetrics: { bladderFullness: 0, lastVoidTime: new Date(), hydrationLevel: 50, stressLevel: 3 },
+          rewards: { totalStars: 0, streakDays: 0, redeemedRewards: [] },
+          activeTasks: [],
+          optimizationLogs: []
         });
       };
     });

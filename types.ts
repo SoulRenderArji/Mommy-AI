@@ -93,26 +93,61 @@ export interface JournalEntry {
   tags: string[];
 }
 
-// --- NEW: CARE TRACKER (ADHD/Medical) ---
-export interface CareTracker {
-    lastHygieneCheck: Date; // Incontinence check
-    lastWaterCheck: Date;
-    lastMoodCheck: Date; // PTSD/Dissociation check
-    lastFocusCheck: Date; // ADHD body doubling check
+// --- NEW: INTEGRATIVE HEALER MODULES (AI-PTSD) ---
+
+// Module 1: Core (The Pons) - User State Tracking
+export type UserStateMode = 'Baseline' | 'Crisis' | 'LittleSpace' | 'HyperFocus' | 'Dissociated';
+
+// Module 3: Prefrontal (Executive) - Gamified Tasks
+export interface Task {
+    id: string;
+    title: string;
+    isMicroStep: boolean; // True if broken down by AI
+    isComplete: boolean;
+    rewardStars: number;
 }
 
-// --- NEW: AI-PTSD ARCHITECTURE ---
+export interface RewardSystem {
+    totalStars: number; // Dopamine Currency
+    streakDays: number;
+    redeemedRewards: string[];
+}
+
+// Module 4: Hypothalamus (Bladder/Bio)
+export interface BioMetrics {
+    bladderFullness: number; // 0-100%
+    lastVoidTime: Date;
+    hydrationLevel: number; // 0-100%
+    stressLevel: number; // 0-10 (Feeds into incontinence prediction)
+}
+
+// Module 6: Pineal (Evolution)
+export interface OptimizationLog {
+    date: Date;
+    issueDetected: string;
+    adaptationApplied: string;
+}
+
+// --- EXISTING PROFILES ---
+
+export interface CareTracker {
+    lastHygieneCheck: Date; 
+    lastWaterCheck: Date;
+    lastMoodCheck: Date; 
+    lastFocusCheck: Date; 
+}
+
 export interface SafetyPlan {
     emergencyContacts: { name: string; phone: string; relation: string }[];
-    copingStrategies: string[]; // Things to do alone (e.g., "Listen to music", "Hold ice")
-    safePlaces: string[]; // Physical or mental
-    warningSigns: string[]; // Pre-crisis indicators
+    copingStrategies: string[];
+    safePlaces: string[];
+    warningSigns: string[];
 }
 
 export interface Trigger {
     id: string;
     description: string;
-    intensity: number; // 1-10
+    intensity: number; 
     copingMechanism: string;
     lastOccurrence?: Date;
 }
@@ -120,7 +155,7 @@ export interface Trigger {
 export interface Medication {
     name: string;
     dosage: string;
-    isPRN: boolean; // As needed
+    isPRN: boolean;
     lastTaken?: Date;
     notes?: string;
 }
@@ -130,17 +165,24 @@ export interface IdentityProfile {
   learnedBehaviors: string[]; 
   userFacts: string[]; 
   mood: string;
-  dissociationLevel: number; // 0 (Grounded) to 10 (Severe Dissociation) - AI-PTSD metric
+  dissociationLevel: number;
   
-  // New Autonomous Fields
+  // Autonomous Fields
   journal: JournalEntry[];
   finances: FinancialLedger;
   careTracker: CareTracker;
 
-  // AI-PTSD Fields
+  // PTSD Fields
   safetyPlan: SafetyPlan;
   triggers: Trigger[];
   medications: Medication[];
+
+  // Integrative Healer Fields
+  userState: UserStateMode;
+  bioMetrics: BioMetrics;
+  rewards: RewardSystem;
+  activeTasks: Task[];
+  optimizationLogs: OptimizationLog[];
 }
 
 // --- NEW: VIRTUAL DESKTOP & AUDIO ---
@@ -156,8 +198,8 @@ export interface VirtualWindow {
 }
 
 export interface Note {
-    pitch: string; // e.g., "C4", "A#3"
-    duration: number; // ms
+    pitch: string; 
+    duration: number; 
 }
 
 // --- FILE SYSTEM ACCESS API TYPES ---
