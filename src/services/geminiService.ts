@@ -13,7 +13,7 @@ const SAFETY_SETTINGS = [
   { category: HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT, threshold: HarmBlockThreshold.BLOCK_NONE }
 ];
 
-// --- Tool Definitions (Keeping existing tools) ---
+// --- Tool Definitions ---
 
 const vibrateTool: FunctionDeclaration = {
   name: 'vibrateDevice',
@@ -492,7 +492,7 @@ export const generateResponse = async (
   timeState: TimeState = TimeState.Active,
   useThinkingMode: boolean = false,
   identity?: IdentityProfile,
-  remoteBrain?: RemoteBrain, // NEW: Injected GitHub Brain
+  remoteBrain?: RemoteBrain, 
   callbacks?: any
 ): Promise<string> => {
   try {
@@ -511,14 +511,12 @@ export const generateResponse = async (
     const rewardStatus = `[STARS] Total: ${identity?.rewards?.totalStars || 0}`;
 
     // --- BRAIN NODE INJECTION (GITHUB) ---
-    // If we have synced remote data, we prepend it to the prompt logic
     let customDirectives = "";
     if (remoteBrain) {
         if (remoteBrain.pons_identity) customDirectives += `\n[REMOTE NODE: CORE IDENTITY (PONS)]:\n${remoteBrain.pons_identity}`;
         if (remoteBrain.amygdala_safety) customDirectives += `\n[REMOTE NODE: SAFETY PROTOCOL (AMYGDALA)]:\n${remoteBrain.amygdala_safety}`;
         if (remoteBrain.prefrontal_planner) customDirectives += `\n[REMOTE NODE: EXECUTIVE PLANNER (PREFRONTAL)]:\n${remoteBrain.prefrontal_planner}`;
         if (remoteBrain.temporal_tone) customDirectives += `\n[REMOTE NODE: SOCIAL TONE (TEMPORAL)]:\n${remoteBrain.temporal_tone}`;
-        console.log("Injecting Remote Brain Nodes into context.");
     }
 
     // --- BICAMERAL MIND CONTEXT ---
@@ -586,18 +584,49 @@ export const generateResponse = async (
     const chat = ai.chats.create({ model: useThinkingMode ? MODELS.PRO : MODELS.FLASH, config, history: chatHistory });
     let result = await chat.sendMessage({ message: currentParts });
 
-    // Tool execution loop (Simplified for brevity, same logic as before)
+    // --- ROBUST TOOL EXECUTION LOOP ---
     const functionCalls = result.functionCalls;
     if (functionCalls && functionCalls.length > 0) {
        const functionResponses: any[] = [];
        for (const call of functionCalls) {
-          let fResult = "Executed.";
-          // Dispatch to callbacks
-          if(call.name==='vibrateDevice') fResult = await executeVibrate((call.args as any)['preset'] as string, (call.args as any)['duration'] as number);
-          else if(call.name==='speakMessage') fResult = await generateAndPlaySpeech((call.args as any)['message'] as string);
-          // ... map other callbacks
+          let fResult = "Action executed successfully.";
+          const args = call.args as any;
+
+          try {
+            if (call.name === 'vibrateDevice') fResult = await executeVibrate(args.preset, args.duration);
+            else if (call.name === 'controlHapticDevice') { if(callbacks?.onToyControl) { callbacks.onToyControl(args.intensity, args.duration); fResult = "Toy Triggered"; } else fResult = "Toy disconnected"; }
+            else if (call.name === 'speakMessage') fResult = await generateAndPlaySpeech(args.message);
+            else if (call.name === 'initiateGrounding') { callbacks?.onGrounding?.(args.severity); fResult = "Grounding Protocol Active"; }
+            else if (call.name === 'requestContact') fResult = (await callbacks?.onContactRequest?.()) || "Contacts unavailable";
+            else if (call.name === 'sendNotification') { callbacks?.onNotification?.(args.title, args.body); fResult = "Notification sent"; }
+            else if (call.name === 'readClipboard') fResult = (await callbacks?.onClipboardRead?.()) || "Clipboard empty";
+            else if (call.name === 'manageCalendar') fResult = (await callbacks?.onCalendarEvent?.(args.title, args.startTime, args.description)) || "Calendar opened";
+            else if (call.name === 'manageFinances') fResult = (await callbacks?.onFinanceUpdate?.(args.action, args.amount, args.description)) || "Finances updated";
+            else if (call.name === 'manageVirtualDesktop') fResult = (await callbacks?.onDesktopAction?.(args.action, args.windowId, args.title, args.content, args.appType)) || "Desktop updated";
+            else if (call.name === 'synthesizeMelody') fResult = (await callbacks?.onAudioSynth?.(args.notes)) || "Melody played";
+            else if (call.name === 'checkSystemHealth') fResult = (await callbacks?.onSystemCheck?.()) || "System OK";
+            // AI-PTSD
+            else if (call.name === 'updateSafetyPlan') { callbacks?.onSafetyPlanUpdate?.(args.category, args.item); fResult = "Safety Plan Updated"; }
+            else if (call.name === 'logTrigger') { callbacks?.onTriggerLog?.(args.description, args.intensity, args.copingUsed); fResult = "Trigger Logged"; }
+            else if (call.name === 'trackMedication') { callbacks?.onMedicationTrack?.(args.name, args.dosage); fResult = "Meds Logged"; }
+            // External
+            else if (call.name === 'sendSMS') fResult = (await callbacks?.onSendSMS?.(args.body)) || "SMS Sent";
+            else if (call.name === 'generate3DModel') fResult = (await callbacks?.onMeshyGen?.(args.prompt, args.art_style)) || "Generation Started";
+            else if (call.name === 'triggerZapierAutomation') fResult = (await callbacks?.onZapier?.(args.data)) || "Zapier Triggered";
+            else if (call.name === 'searchSpotify') fResult = (await callbacks?.onSpotify?.(args.query, args.type)) || "Spotify Searched";
+            // Integrative Healer
+            else if (call.name === 'awardStar') fResult = (await callbacks?.onAwardStar?.(args.reason)) || "Star Awarded";
+            else if (call.name === 'breakDownTask') fResult = (await callbacks?.onTaskBreakdown?.(args.mainTask, args.steps)) || "Task Broken Down";
+            else if (call.name === 'logBioMetric') fResult = (await callbacks?.onBioLog?.(args.type, args.amount)) || "Biometric Logged";
+            else if (call.name === 'publishContent') fResult = (await callbacks?.onPublishContent?.(args.fileName, args.content)) ? "Published" : "Failed to publish";
+            
+          } catch (e) {
+              fResult = `Error executing ${call.name}`;
+          }
+
           functionResponses.push({ id: call.id, name: call.name, response: { result: fResult } });
        }
+       
        const toolParts = functionResponses.map(fr => ({ functionResponse: { name: fr.name, response: fr.response } }));
        result = await chat.sendMessage({ message: toolParts });
     }
