@@ -14,3 +14,4 @@ numpy
 pyaudio
 pyttsx3
 SpeechRecognition
+flask
