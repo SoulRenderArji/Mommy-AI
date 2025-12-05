@@ -5,8 +5,10 @@ import logging
 from typing import Any, Dict
 import threading
 import sqlite3
+from datetime import datetime
 
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file
+from flask_cors import CORS
 import google.generativeai as genai
 from dotenv import load_dotenv
 from services.memory_manager import save_memory, recall_memory
@@ -71,11 +73,23 @@ class MommyAI:
         self.allow_nsfw = os.getenv("ALLOW_NSFW", "false").lower() in ("1", "true", "yes")
         if ollama_enabled and OllamaClient is not None:
             try:
-                self.ollama_client = OllamaClient()
-                self.logger.info(f"Ollama client initialized (model default: {self.ollama_model})")
+                host = os.getenv("OLLAMA_HOST") # Use host from .env if provided
+                self.ollama_client = OllamaClient(host=host)
+                # Verify connection and check for the desired model
+                local_models = self.ollama_client.list()["models"]
+                model_names = [m["name"] for m in local_models]
+                self.logger.info(f"Successfully connected to Ollama. Available models: {', '.join(model_names)}")
+                
+                # Check if the default NSFW model is available and log a warning if not
+                if self.ollama_model not in model_names:
+                    self.logger.warning(
+                        f"Ollama model '{self.ollama_model}' not found locally. "
+                        f"Please run 'ollama pull {self.ollama_model}' to use it."
+                    )
+
             except Exception as e:
                 self.ollama_client = None
-                self.logger.warning(f"Failed to initialize Ollama client: {e}")
+                self.logger.error(f"Could not connect to Ollama server. Ollama fallback is DISABLED. Error: {e}")
         else:
             self.ollama_client = None
 
@@ -139,7 +153,25 @@ class MommyAI:
     def get_user_profile(self, username: str) -> Dict[str, Any] | None:
         if not username:
             return None
-        return self.user_profiles.get(username.lower())
+        
+        profile = self.user_profiles.get(username.lower())
+        if not profile:
+            return None
+
+        # Make a copy to avoid modifying the original in-memory profile
+        profile_copy = profile.copy()
+
+        # Dynamic age calculation if birth_date is present
+        if "birth_date" in profile_copy:
+            try:
+                birth_date = datetime.strptime(profile_copy["birth_date"], "%Y-%-m-%-d")
+                today = datetime.today()
+                age = today.year - birth_date.year - ((today.month, today.day) < (birth_date.month, birth_date.day))
+                profile_copy["age"] = age
+            except (ValueError, TypeError):
+                self.logger.warning(f"Could not parse birth_date for user '{username}'.")
+        
+        return profile_copy
         
         try:
             conn = sqlite3.connect(db_path)
@@ -417,6 +449,7 @@ class MommyAI:
 # --- Server Setup ---
 
 app = Flask(__name__)
+CORS(app)  # Enable CORS for network requests
 
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 
@@ -561,6 +594,32 @@ def update_effectiveness():
         return jsonify({"status": "success", "message": message}), 200
     else:
         return jsonify({"status": "error", "message": f"Could not find or update action: {action_type} / {communication_style}"}), 404
+
+@app.route("/system/status", methods=["GET"])
+def system_status():
+    """
+    Returns the current system status including available users and server health.
+    """
+    users = list(set([k.capitalize() for k in ai.user_profiles.keys()] + ["Hailey", "Brandon"]))
+    return jsonify({
+        "status": "online",
+        "users": users,
+        "model": "Mommy AI (Rowan)",
+        "version": "1.0",
+        "ollama_enabled": ai.ollama_client is not None,
+        "nsfw_allowed": ai.allow_nsfw
+    }), 200
+
+@app.route("/", methods=["GET"])
+def serve_chat_ui():
+    """
+    Serves the web chat interface.
+    """
+    try:
+        return send_file("mommy_ai_chat.html", mimetype="text/html")
+    except Exception as e:
+        logging.error(f"Error serving chat UI: {e}")
+        return jsonify({"error": "Chat UI not found"}), 404
 
 if __name__ == "__main__":
     # Start the scheduler in a background thread.

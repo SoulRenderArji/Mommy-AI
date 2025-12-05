@@ -9,6 +9,10 @@ import shlex
 
 CURRENT_USER = "hailey"  # Default user
 API_URL = "http://127.0.0.1:5000/ask"
+NSFW_SESSION = {
+    "active": False,
+    "age": None
+}
 
 def initialize_tts():
     """Initializes the text-to-speech engine."""
@@ -45,7 +49,12 @@ def listen_for_command():
 def ask_mommy_api(query: str, user: str) -> str:
     """Sends a query to the MommyAI server and gets a response."""
     try:
-        payload = {"user": user, "query": query}
+        payload = {"user": user, "query": query}        
+        # If the NSFW session is active, automatically add the required flags
+        if NSFW_SESSION["active"]:
+            payload["nsfw"] = True
+            payload["age"] = NSFW_SESSION["age"]
+
         response = requests.post(API_URL, json=payload)
         response.raise_for_status()
         return response.json().get("response", "Mommy heard you, but her thoughts are a bit jumbled.")
@@ -90,8 +99,9 @@ async def main():
     global CURRENT_USER
     tts_engine = initialize_tts()
     print("--- Mommy's Listening (Unified Core) ---")
-    speak(tts_engine, "I'm here, sweetie. Tell me anything.")
+    speak(tts_engine, "I'm here, sweetie. Tell Mommy anything.")
     print("You can switch users by typing 'login <name>' (e.g., 'login brandon').")
+    print("\n[System Notice: All parties represented or interacting with this system are over the age of 21. This system does not involve or condone interaction with actual minors.]")
 
     while True:
         try:
@@ -113,6 +123,24 @@ async def main():
                 new_user = query.split(" ", 1)[1].lower()
                 CURRENT_USER = new_user
                 print(f"Mommy sees you, {CURRENT_USER.capitalize()}!")
+                continue
+
+            if query.lower().startswith("/nsfw-on "):
+                try:
+                    age_str = query.split(" ", 1)[1]
+                    age = int(age_str)
+                    if age >= 21:
+                        NSFW_SESSION["active"] = True
+                        NSFW_SESSION["age"] = age
+                        print("\nSystem: NSFW session is now active. Mature topics are enabled.")
+                    else:
+                        print("\nSystem: You must be 21 or older to enable this mode.")
+                except (ValueError, IndexError):
+                    print("\nUsage: /nsfw-on <your_age>")
+                continue
+            elif query.lower() == "/nsfw-off":
+                NSFW_SESSION["active"] = False
+                print("\nSystem: NSFW session is now disabled.")
                 continue
             
             if query.lower().startswith("/feedback "):

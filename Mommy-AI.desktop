@@ -1,0 +1,11 @@
+[Desktop Entry]
+Version=1.0
+Type=Application
+Name=Mommy AI
+Comment=Start Mommy AI server with Ollama
+Exec=/home/hailey/Documents/GitHub/Mommy-AI/start_mommy_ai.sh
+Icon=/home/hailey/Documents/GitHub/Mommy-AI/mommy_ai_icon.svg
+Terminal=true
+Categories=Utility;
+Keywords=ai;chat;mommy;
+StartupNotify=true

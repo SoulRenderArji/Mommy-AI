@@ -1,0 +1,12 @@
+{
+  "hailey": {
+    "display_name": "Hailey",
+    "birth_date": "1985-7-9",
+    "pronouns": "she/her"
+  },
+  "brandon": {
+    "display_name": "Brandon",
+    "birth_date": "1991-7-18",
+    "pronouns": "he/him"
+  }
+}
