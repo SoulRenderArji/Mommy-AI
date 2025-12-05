@@ -5,6 +5,8 @@ import asyncio
 from .ai_core import unified_think
 import pyttsx3
 import speech_recognition as sr
+import requests
+import shlex
 
 CURRENT_USER = "hailey"  # Default user
 
@@ -40,10 +42,37 @@ def listen_for_command():
     except sr.RequestError:
         return "Mommy's ears are having trouble connecting. Let's try typing for now."
 
+def send_feedback_api(user: str, action: str, style: str, rating: int) -> str:
+    """Sends effectiveness feedback to the MommyAI server."""
+    feedback_url = "http://127.0.0.1:5000/feedback/effectiveness"
+    try:
+        payload = {
+            "user": user,
+            "action_type": action,
+            "communication_style": style,
+            "feedback": rating
+        }
+        response = requests.post(feedback_url, json=payload)
+        response.raise_for_status()
+        return response.json().get("message", "Feedback received, thank you.")
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 404:
+            return "Mommy couldn't find that specific action/style combination to update."
+        else:
+            error_detail = e.response.json().get('error', 'An unknown error occurred.')
+            return f"Mommy had a problem processing that feedback: {error_detail}"
+    except requests.exceptions.RequestException as e:
+        print(f"\nError connecting to Mommy AI server: {e}")
+        return "I can't seem to reach Mommy right now, sweetie. Is her server running?"
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+        return "Something went very wrong. Please check the console."
+
 async def main():
     """
     Main loop for an interactive chat session that uses persistent memory.
     """
+    global CURRENT_USER
     tts_engine = initialize_tts()
     print("--- Mommy's Listening (Unified Core) ---")
     speak(tts_engine, "I'm here, sweetie. Tell me anything.")
@@ -66,10 +95,24 @@ async def main():
                 break
             
             if query.lower().startswith("login "):
-                global CURRENT_USER
                 new_user = query.split(" ", 1)[1].lower()
                 CURRENT_USER = new_user
                 print(f"Mommy sees you, {CURRENT_USER.capitalize()}!")
+                continue
+            
+            if query.lower().startswith("/feedback "):
+                try:
+                    # Use shlex to safely parse the command
+                    parts = shlex.split(query)
+                    if len(parts) != 4:
+                        print("\nUsage: /feedback \"<action_type>\" \"<style>\" <rating>")
+                        continue
+                    _, action_type, style, rating_str = parts
+                    rating = int(rating_str)
+                    feedback_response = await asyncio.to_thread(send_feedback_api, CURRENT_USER, action_type, style, rating)
+                    print(f"\nSystem: {feedback_response}")
+                except (ValueError, IndexError):
+                    print("\nInvalid feedback format. Usage: /feedback \"<action_type>\" \"<style>\" <rating>")
                 continue
 
             response = await unified_think(query, user=CURRENT_USER)
