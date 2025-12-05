@@ -28,7 +28,4 @@
       manager = "web";
     };
   };
-  # The startTasks section is no longer needed for Python dependencies
-  # as they are now managed declaratively by Nix.
-  idx.startTasks = [];
 }

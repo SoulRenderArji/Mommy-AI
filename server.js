@@ -59,7 +59,7 @@ app.use('/api/sanctuary', sanctuaryRoutes);
 
 // --- SPA Fallback ---
 // All non-API requests should serve the main app file
-app.get(/'^(?!\/api).*/', (req, res) => {
+app.get(/^(?!\/api).*/, (req, res) => {
   res.sendFile(path.join(__dirname, 'dist', 'index.html'));
 });
 

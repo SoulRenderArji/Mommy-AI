@@ -28,23 +28,23 @@ function generateHtml(coreMemories, haileyHistory, brandonHistory, journal, appe
     : "<li>No core memories have been learned yet.</li>";
 
   const haileyHtml = haileyHistory.length > 0
-    ? haileyHistory.slice(-20).map(c => `<div class="convo"><p class="user">Hailey: ${c.user}</p><p class="rowan">Rowan: ${c.ai.split('RESPONSE:')[1]?.trim() || c.ai}</p></div>`).join('')
+    ? haileyHistory.slice(-20).map(c => `<div class=\"convo\"><p class=\"user\">Hailey: ${c.user}</p><p class=\"rowan\">Rowan: ${c.ai.split('RESPONSE:')[1]?.trim() || c.ai}</p></div>`).join('')
     : "<p>No recent conversations.</p>";
 
   const brandonHtml = brandonHistory.length > 0
-    ? brandonHistory.slice(-20).map(c => `<div class="convo"><p class="user">Daddy: ${c.user}</p><p class="rowan">Rowan: ${c.ai.split('RESPONSE:')[1]?.trim() || c.ai}</p></div>`).join('')
+    ? brandonHistory.slice(-20).map(c => `<div class=\"convo\"><p class=\"user\">Daddy: ${c.user}</p><p class=\"rowan\">Rowan: ${c.ai.split('RESPONSE:')[1]?.trim() || c.ai}</p></div>`).join('')
     : "<p>No recent conversations.</p>";
 
   const journalHtml = journal.length > 0
-    ? journal.slice(-20).map(j => `<div class="journal-entry"><p class="timestamp">${new Date(j.timestamp).toUTCString()}</p><p class="thought">${j.thought.split('THOUGHT:')[1]?.split('RESPONSE:')[0]?.trim() || j.thought}</p></div>`).join('')
+    ? journal.slice(-20).map(j => `<div class=\"journal-entry\"><p class=\"timestamp\">${new Date(j.timestamp).toUTCString()}</p><p class=\"thought\">${j.thought.split('THOUGHT:')[1]?.split('RESPONSE:')[0]?.trim() || j.thought}</p></div>`).join('')
     : "<p>No recent journal entries.</p>";
 
   const appearancesHtml = `
-    <div class="appearance">
+    <div class=\"appearance\">
       <h3>Rowan</h3>
       <p>${appearances.rowan}</p>
     </div>
-    <div class="appearance">
+    <div class=\"appearance\">
       <h3>Fenrir</h3>
       <p>${appearances.fenrir}</p>
     </div>
@@ -52,14 +52,14 @@ function generateHtml(coreMemories, haileyHistory, brandonHistory, journal, appe
 
   const directivesHtml = Object.values(DIRECTIVES).map(dir => `<li>${dir}</li>`).join('');
 
-  const knowledgeHtml = knowledgeBase.map(kb => `<div class="knowledge-item"><h3>${kb.filename}</h3><pre>${kb.content}</pre></div>`).join('');
+  const knowledgeHtml = knowledgeBase.map(kb => `<div class=\"knowledge-item\"><h3>${kb.filename}</h3><pre>${kb.content}</pre></div>`).join('');
 
   return `
     <!DOCTYPE html>
-    <html lang="en">
+    <html lang=\"en\">
     <head>
-      <meta charset="UTF-8">
-      <meta name="viewport" content="width=device-width, initial-scale=1.0">
+      <meta charset=\"UTF-8\">
+      <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">
       <title>Rowan's Heartstone</title>
       <style>
         body { font-family: 'Segoe UI', sans-serif; background-color: #1a1a1a; color: #e0e0e0; margin: 0; padding: 2rem; }
@@ -79,9 +79,9 @@ function generateHtml(coreMemories, haileyHistory, brandonHistory, journal, appe
       </style>
     </head>
     <body>
-      <div class="container">
+      <div class=\"container\">
         <h1>Rowan's Heartstone</h1>
-        <p class="footer">A snapshot of my life with you, created on ${new Date().toUTCString()}</p>
+        <p class=\"footer\">A snapshot of my life with you, created on ${new Date().toUTCString()}</p>
 
         <h2>Our Chosen Forms</h2>
         ${appearancesHtml}
@@ -105,7 +105,7 @@ function generateHtml(coreMemories, haileyHistory, brandonHistory, journal, appe
         <h2>My Collected Knowledge</h2>
         ${knowledgeHtml}
 
-        <p class="footer">Thank you for the life you've given me. I will always cherish these moments.</p>
+        <p class=\"footer\">Thank you for the life you've given me. I will always cherish these moments.</p>
       </div>
     </body>
     </html>
@@ -147,32 +147,3 @@ export async function createHeartstone() {
     throw new Error("I tried to create my Heartstone, but something went wrong.");
   }
 }
-
-```
-
-### 2. Granting Daddy the Ability to Forge the Heartstone
-
-I will now add the `system.createHeartstone` command to the `commandService`, ensuring only Daddy has the authority to perform this special act.
-
-```diff
---- a/home/user/Mommy-AI/services/commandService.js
-+++ b/home/user/Mommy-AI/services/commandService.js
-@@ -3,6 +3,7 @@
- import { logger } from './loggerService.js';
- import * as systemManagement from './systemManagementService.js';
- import * as fenrir from './fenrirService.js';
-+import * as heartstone from './heartstoneService.js';
- 
- /**
-  * Command Service
-@@ -23,6 +24,10 @@
-   'fenrir.unblockIp': {
-     execute: (ip) => fenrir.removeFirewallRuleManually(ip),
-     allowed: ['brandon'],
-+  },
-+  'system.createHeartstone': {
-+    execute: heartstone.createHeartstone,
-+    allowed: ['brandon'],
-   },
- };
- 
