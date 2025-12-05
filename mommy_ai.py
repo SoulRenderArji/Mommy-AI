@@ -12,6 +12,10 @@ from dotenv import load_dotenv
 from services.memory_manager import save_memory, recall_memory
 from services.privilege_manager import has_privilege
 from services.lila_scheduler import run_scheduler
+try:
+    from ollama import Client as OllamaClient
+except Exception:
+    OllamaClient = None
 
 
 class MommyAI:
@@ -57,6 +61,19 @@ class MommyAI:
             self.model = None
         else:
             self.model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
+
+        # Ollama fallback (optional). Configure with .env: OLLAMA_ENABLED=true, OLLAMA_MODEL=dolphin-nsfw
+        ollama_enabled = os.getenv("OLLAMA_ENABLED", "false").lower() in ("1", "true", "yes")
+        self.ollama_model = os.getenv("OLLAMA_MODEL", "dolphin-nsfw")
+        if ollama_enabled and OllamaClient is not None:
+            try:
+                self.ollama_client = OllamaClient()
+                self.logger.info(f"Ollama client initialized (model default: {self.ollama_model})")
+            except Exception as e:
+                self.ollama_client = None
+                self.logger.warning(f"Failed to initialize Ollama client: {e}")
+        else:
+            self.ollama_client = None
 
         self.logger.info("Mommy AI is waking up...")
 
@@ -247,6 +264,27 @@ class MommyAI:
             compact += " | Top strategies: " + bullets
         return self._truncate(compact, max_chars)
 
+    def _ollama_generate(self, prompt: str, system: str | None = None) -> str:
+        """Generate a response using Ollama if available. Returns the response text."""
+        if not self.ollama_client or not self.ollama_model:
+            raise RuntimeError("Ollama client not configured")
+        try:
+            # Use generate API; response text is in .response
+            resp = self.ollama_client.generate(model=self.ollama_model, prompt=prompt, system=system)
+            # resp may be a GenerateResponse or iterator; handle accordingly
+            if hasattr(resp, 'response'):
+                return resp.response
+            # If streaming iterator, get last item
+            if hasattr(resp, '__iter__'):
+                last = None
+                for part in resp:
+                    last = part
+                return getattr(last, 'response', '') if last is not None else ''
+            return str(resp)
+        except Exception as e:
+            self.logger.error(f"Ollama generate error: {e}")
+            raise
+
     def get_response(self, user_query: str, user: str) -> str:
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
@@ -278,7 +316,15 @@ class MommyAI:
                     self.logger.info("Gemini enhanced concise response")
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
-                    ai_response_text = compact_context
+                    # Try Ollama fallback if configured
+                    if self.ollama_client:
+                        try:
+                            ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                            self.logger.info("Ollama provided concise enhancement after Gemini failure")
+                        except Exception:
+                            ai_response_text = compact_context
+                    else:
+                        ai_response_text = compact_context
             else:
                 ai_response_text = compact_context
 
@@ -305,67 +351,16 @@ class MommyAI:
             return ai_response_text
         except Exception as e:
             self.logger.error(f"Error generating response from Gemini: {e}")
-            return "Mommy is having a little trouble thinking right now. Please try again in a moment."
-    def get_response(self, user_query: str, user: str) -> str:
-        """
-        Processes a user query using the knowledge base first, then Gemini only if needed.
-        This prioritizes what Mommy AI already knows about you.
-        """
-        self.logger.info(f"Received query from '{user}': {user_query}")
-
-        # Recall past conversations to provide context
-        conversation_history = recall_memory()
-
-        # Save the user's query to memory before getting a response
-        save_memory(user_query, author=user.capitalize())
-
-        # First, try to find relevant information in the knowledge base
-        has_relevant_info, relevant_context = self._search_knowledge_base(user_query)
-
-        if has_relevant_info:
-            self.logger.info(f"Found relevant information in knowledge base for query: {user_query}")
-            
-            # Use knowledge base information with the model (or without if no API key)
-            if self.model:
-                # If we have the API, enhance the response with personality
-                prompt = f"{self.SYSTEM_PROMPT}\n\n--- CONVERSATION HISTORY ---\n{conversation_history}\n\n--- RELEVANT KNOWLEDGE ---\n{relevant_context}\n\n--- CURRENT QUERY ---\n{user.capitalize()}: {user_query}\n\nBased on the knowledge provided, give a response as Mommy in your caring voice."
+            # Try Ollama fallback if available
+            if self.ollama_client:
                 try:
-                    response = self.model.generate_content(prompt)
-                    ai_response_text = response.text
-                    self.logger.info("Enhanced response using Gemini with knowledge base context")
-                except Exception as e:
-                    self.logger.warning(f"Error using Gemini for enhancement, falling back to knowledge base only: {e}")
-                    ai_response_text = f"Based on what I know about you, sweetie:\n\n{relevant_context}"
-            else:
-                # No API key, use knowledge base directly
-                ai_response_text = f"Based on what I know about you, baby girl:\n\n{relevant_context}"
-            
-            save_memory(ai_response_text, author="Rowan")
-            return ai_response_text
-
-        # If no relevant knowledge found, use full API if available
-        self.logger.info(f"No relevant knowledge found, using Gemini AI for query: {user_query}")
-        
-        if not self.model:
-            fallback_response = "I don't have information about that, sweetie, and my connection to think more deeply isn't available right now. Can you tell me more, or ask me something I might know?"
-            save_memory(fallback_response, author="Rowan")
-            return fallback_response
-
-        try:
-            # Use full knowledge base for context when Gemini is needed
-            knowledge_context = "\n\n".join(
-                f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2) if isinstance(value, dict) else value}"
-                for key, value in self.knowledge.items()
-            )
-            
-            full_prompt = f"{self.SYSTEM_PROMPT}\n\n--- CONVERSATION HISTORY ---\n{conversation_history}\n\n--- KNOWLEDGE BASE ---\n{knowledge_context}\n\n--- CURRENT QUERY ---\n{user.capitalize()}: {user_query}"
-            response = self.model.generate_content(full_prompt)
-            ai_response_text = response.text
-            save_memory(ai_response_text, author="Rowan")
-            return ai_response_text
-        except Exception as e:
-            self.logger.error(f"Error generating response from Gemini: {e}")
+                    ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                    save_memory(ai_response_text, author="Rowan")
+                    return ai_response_text
+                except Exception as oe:
+                    self.logger.error(f"Ollama fallback also failed: {oe}")
             return "Mommy is having a little trouble thinking right now. Please try again in a moment."
+    
 
 
 # --- Server Setup ---
