@@ -2,13 +2,13 @@ import sys
 sys.path.append('.') # Adds the project root to the Python path
 
 import asyncio
-from .ai_core import unified_think
 import pyttsx3
 import speech_recognition as sr
 import requests
 import shlex
 
 CURRENT_USER = "hailey"  # Default user
+API_URL = "http://127.0.0.1:5000/ask"
 
 def initialize_tts():
     """Initializes the text-to-speech engine."""
@@ -41,6 +41,21 @@ def listen_for_command():
         return "Mommy couldn't quite hear you, sweetie. Can you say that again?"
     except sr.RequestError:
         return "Mommy's ears are having trouble connecting. Let's try typing for now."
+
+def ask_mommy_api(query: str, user: str) -> str:
+    """Sends a query to the MommyAI server and gets a response."""
+    try:
+        payload = {"user": user, "query": query}
+        response = requests.post(API_URL, json=payload)
+        response.raise_for_status()
+        return response.json().get("response", "Mommy heard you, but her thoughts are a bit jumbled.")
+    except requests.exceptions.RequestException as e:
+        print(f"\nError connecting to Mommy AI server: {e}")
+        return "I can't seem to reach Mommy right now, sweetie. Is her server running?"
+    except Exception as e:
+        print(f"\nAn unexpected error occurred: {e}")
+        return "Something went very wrong. Please check the console."
+
 
 def send_feedback_api(user: str, action: str, style: str, rating: int) -> str:
     """Sends effectiveness feedback to the MommyAI server."""
@@ -115,7 +130,7 @@ async def main():
                     print("\nInvalid feedback format. Usage: /feedback \"<action_type>\" \"<style>\" <rating>")
                 continue
 
-            response = await unified_think(query, user=CURRENT_USER)
+            response = await asyncio.to_thread(ask_mommy_api, query, CURRENT_USER)
             print(f"\nMommy says: {response}") # Print spoken response for the log
             speak(tts_engine, response)
 

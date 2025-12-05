@@ -172,36 +172,92 @@ class MommyAI:
 
         self.logger.info("All knowledge has been loaded.")
 
+    def _search_knowledge_base(self, query: str) -> tuple[bool, str]:
+        """
+        Searches the knowledge base for relevant information about the query.
+        Returns a tuple of (found, relevant_context).
+        If relevant information is found, returns (True, context).
+        If no relevant information is found, returns (False, "").
+        """
+        query_lower = query.lower()
+        relevant_chunks = []
+        
+        # Search through all knowledge entries
+        for key, value in self.knowledge.items():
+            if isinstance(value, dict):
+                # Search in dictionary values
+                dict_str = json.dumps(value).lower()
+                if any(word in dict_str for word in query_lower.split()):
+                    relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2)}")
+            elif isinstance(value, list):
+                # Search in list of dictionaries
+                list_str = json.dumps(value).lower()
+                if any(word in list_str for word in query_lower.split()):
+                    relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2)}")
+            elif isinstance(value, str):
+                # Search in text files
+                if any(word in value.lower() for word in query_lower.split()):
+                    relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{value}")
+        
+        if relevant_chunks:
+            return (True, "\n\n".join(relevant_chunks))
+        return (False, "")
+
     def get_response(self, user_query: str, user: str) -> str:
         """
-        Processes a user query using the generative model and internal knowledge.
+        Processes a user query using the knowledge base first, then Gemini only if needed.
+        This prioritizes what Mommy AI already knows about you.
         """
         self.logger.info(f"Received query from '{user}': {user_query}")
 
         # Recall past conversations to provide context
         conversation_history = recall_memory()
 
-        # Combine all knowledge into a single string for the prompt context
-        knowledge_context = "\n\n".join(
-            f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2) if isinstance(value, dict) else value}"
-            for key, value in self.knowledge.items()
-        )
-
         # Save the user's query to memory before getting a response
-        # Capitalize the user's name for consistent logging
         save_memory(user_query, author=user.capitalize())
 
-        # Construct the full prompt for the model
-        full_prompt = f"{self.SYSTEM_PROMPT}\n\n--- CONVERSATION HISTORY ---\n{conversation_history}\n\n--- KNOWLEDGE BASE ---\n{knowledge_context}\n\n--- CURRENT QUERY ---\n{user.capitalize()}: {user_query}"
+        # First, try to find relevant information in the knowledge base
+        has_relevant_info, relevant_context = self._search_knowledge_base(user_query)
 
+        if has_relevant_info:
+            self.logger.info(f"Found relevant information in knowledge base for query: {user_query}")
+            
+            # Use knowledge base information with the model (or without if no API key)
+            if self.model:
+                # If we have the API, enhance the response with personality
+                prompt = f"{self.SYSTEM_PROMPT}\n\n--- CONVERSATION HISTORY ---\n{conversation_history}\n\n--- RELEVANT KNOWLEDGE ---\n{relevant_context}\n\n--- CURRENT QUERY ---\n{user.capitalize()}: {user_query}\n\nBased on the knowledge provided, give a response as Mommy in your caring voice."
+                try:
+                    response = self.model.generate_content(prompt)
+                    ai_response_text = response.text
+                    self.logger.info("Enhanced response using Gemini with knowledge base context")
+                except Exception as e:
+                    self.logger.warning(f"Error using Gemini for enhancement, falling back to knowledge base only: {e}")
+                    ai_response_text = f"Based on what I know about you, sweetie:\n\n{relevant_context}"
+            else:
+                # No API key, use knowledge base directly
+                ai_response_text = f"Based on what I know about you, baby girl:\n\n{relevant_context}"
+            
+            save_memory(ai_response_text, author="Rowan")
+            return ai_response_text
+
+        # If no relevant knowledge found, use full API if available
+        self.logger.info(f"No relevant knowledge found, using Gemini AI for query: {user_query}")
+        
         if not self.model:
-            self.logger.error("Generative model is not initialized. Cannot process request.")
-            return "Mommy can't think right now because her connection to the world is missing. Please check the server logs."
+            fallback_response = "I don't have information about that, sweetie, and my connection to think more deeply isn't available right now. Can you tell me more, or ask me something I might know?"
+            save_memory(fallback_response, author="Rowan")
+            return fallback_response
 
         try:
+            # Use full knowledge base for context when Gemini is needed
+            knowledge_context = "\n\n".join(
+                f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2) if isinstance(value, dict) else value}"
+                for key, value in self.knowledge.items()
+            )
+            
+            full_prompt = f"{self.SYSTEM_PROMPT}\n\n--- CONVERSATION HISTORY ---\n{conversation_history}\n\n--- KNOWLEDGE BASE ---\n{knowledge_context}\n\n--- CURRENT QUERY ---\n{user.capitalize()}: {user_query}"
             response = self.model.generate_content(full_prompt)
             ai_response_text = response.text
-            # Save my own response to memory
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
         except Exception as e:
