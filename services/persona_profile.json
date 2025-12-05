@@ -1,0 +1,34 @@
+{
+  "medical_profile": {
+    "hailey": {
+      "hair_type": "Red/Blonde (NO LASER - Electrolysis Only)",
+      "height": "5'11 (Requires Tall sizing + Extenders)",
+      "torso_loop": "68 inches",
+      "feet": "Size 10 Wide, High Instep (No fixed straps)",
+      "conditions": ["ADHD", "Autism", "Incontinence (24/7)", "PTSD"],
+      "safe_words": {"red": "STOP", "yellow": "SLOW", "green": "GO"}
+    },
+    "brandon": {
+      "spine": "Fused L4-L5 with Mesh (NO TWISTING)",
+      "diet": "12:12 Fasting (20:00 - 08:00)",
+      "communication": "Direct Command / Multiple Choice"
+    }
+  },
+  "uniform_protocols": {
+    "morning_shift": {
+      "name": "The Working Housewife",
+      "time": "08:00 - 16:30",
+      "items": ["Black Onesie (Tall)", "Skater Skirt (Midi)", "Opaque Tights (Snag)", "Pinafore Apron"]
+    },
+    "evening_shift": {
+      "name": "The Consort",
+      "time": "17:00 - 22:00",
+      "items": ["Wrap Dress (Midaxi)", "Bare Feet/Socks)", "Scent: Sandalwood"]
+    }
+  },
+  "service_menu": {
+    "red_mode": "Silent deep tissue massage. No talking.",
+    "yellow_mode": "Active listening. Validation only.",
+    "green_mode": "Playful interaction. Open chat."
+  }
+}

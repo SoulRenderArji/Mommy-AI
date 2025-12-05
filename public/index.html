@@ -1,82 +1,33 @@
 <!DOCTYPE html>
 <html lang="en">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no" />
-    <title>Mommy AI</title>
-    <meta name="description" content="A nurturing AI companion" />
-    <meta name="theme-color" content="#fdf2f8">
-    <meta name="mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Mommy Rowan</title>
+    <link rel="stylesheet" href="style.css">
     <link rel="manifest" href="manifest.json">
-    <script src="https://cdn.tailwindcss.com"></script>
-    <script>
-      tailwind.config = {
-        theme: {
-          extend: {
-            colors: {
-              'chimera-bg': '#fdf2f8', // pink-50
-              'chimera-primary': '#fbcfe8', // pink-200
-              'chimera-accent': '#ec4899', // pink-500
-              'chimera-text': '#831843', // pink-900
-              'chimera-secondary': '#f3f4f6', // gray-100
-            },
-            fontFamily: {
-              sans: ['Inter', 'sans-serif'],
-            },
-            animation: {
-              'pulse-slow': 'pulse 3s cubic-bezier(0.4, 0, 0.6, 1) infinite',
-              'float-up': 'floatUp 8s ease-in-out forwards',
-            },
-            keyframes: {
-              floatUp: {
-                '0%': { transform: 'translateY(40px)', opacity: '0' },
-                '10%': { opacity: '1' },
-                '90%': { opacity: '1' },
-                '100%': { transform: 'translateY(-40px)', opacity: '0' },
-              }
-            }
-          },
-        },
-      }
-    </script>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&display=swap" rel="stylesheet">
-    <style>
-      body {
-        font-family: 'Inter', sans-serif;
-        background-color: #fdf2f8;
-        overscroll-behavior-y: none; /* Prevents pull-to-refresh on mobile */
-      }
-      /* Custom scrollbar for webkit */
-      ::-webkit-scrollbar {
-        width: 6px;
-      }
-      ::-webkit-scrollbar-track {
-        background: transparent;
-      }
-      ::-webkit-scrollbar-thumb {
-        background: #fbcfe8;
-        border-radius: 3px;
-      }
-      ::-webkit-scrollbar-thumb:hover {
-        background: #f9a8d4;
-      }
-    </style>
 </head>
-  <body>
-    <div id="root"></div>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>Mommy Rowan</h1>
+            <p>I'm always here for you, sweetie.</p>
+        </div>
+        <div class="chat-box" id="chat-box">
+            <!-- Messages will be added here -->
+            <div class="message lila-message">
+                Hello, my love. Tell Mommy what's on your mind.
+            </div>
+        </div>
+        <div class="input-area">
+            <input type="text" id="message-input" placeholder="Type your message...">
+            <button id="send-button">Send</button>
+        </div>
+    </div>
+
     <script>
-      if ('serviceWorker' in navigator) {
-        window.addEventListener('load', () => {
-          navigator.serviceWorker.register('service-worker.js')
-            .then(registration => {
-              console.log('SW registered: ', registration);
-            })
-            .catch(registrationError => {
-              console.log('SW registration failed: ', registrationError);
-            });
-        });
-      }
+        // We can add the logic to talk to the server here later.
+        // For now, this just sets up the page.
     </script>
-  </body>
+</body>
 </html>

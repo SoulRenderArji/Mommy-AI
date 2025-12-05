@@ -1,0 +1,9 @@
+[submodule "modules/Project-Genesis"]
+	path = modules/Project-Genesis
+	url = https://github.com/SoulRenderArji/Project-Genesis.git
+[submodule "modules/Soul-OS"]
+	path = modules/Soul-OS
+	url = https://github.com/SoulRenderArji/Soul-OS.git
+[submodule "modules/Soul-Search"]
+	path = modules/Soul-Search
+	url = https://github.com/SoulRenderArji/Soul-Search.git

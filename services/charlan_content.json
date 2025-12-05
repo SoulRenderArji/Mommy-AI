@@ -1,0 +1,72 @@
+{
+  "bestiary": [
+    {
+      "name": "Baleful Bouncer",
+      "description": "A living baby bouncer that restrains creatures and shakes them, especially effective if they have a messy diaper."
+    },
+    {
+      "name": "Dastardly Diaper",
+      "description": "An animated diaper that grapples creatures and forces them to have accidents."
+    },
+    {
+      "name": "Pacifying Pacifier",
+      "description": "A flying pacifier that inserts itself into a creature's mouth, reducing their intelligence and preventing spellcasting."
+    },
+    {
+      "name": "Predatory Plush",
+      "description": "A living plush toy that can petrify creatures into plush themselves and has hypnotic, swirly eyes."
+    },
+    {
+      "name": "Putrid Pail",
+      "description": "A flying diaper pail with a powerful stench that can poison creatures and launch soiled diapers at them."
+    },
+    {
+      "name": "Wrathful Rattle",
+      "description": "An animated baby rattle that can charm creatures with its sound."
+    },
+    {
+      "name": "Aromatic Tangler",
+      "description": "A plant-like creature that grapples and restrains victims with its vines, emitting a charming aroma."
+    },
+    {
+      "name": "Aromatic Trapvine",
+      "description": "An insidious plant that entraps victims, regresses them, and feeds off their waste inside a special diaper-fruit."
+    },
+    {
+      "name": "Bogeyman",
+      "description": "A spectral undead that haunts children, causing them to wet the bed in fear. It is banished by bright light."
+    },
+    {
+      "name": "Cherub",
+      "description": "A small, baby-like angel that serves the gods of the Plane of Padding. It can heal but also physically regress creatures with its touch."
+    },
+    {
+      "name": "Daycare Dragon",
+      "description": "A powerful dragon transformed by the Plane of Padding. It has a regression breath weapon and a hypnotic voice, and loves to make 'friends'."
+    },
+    {
+      "name": "Decadent",
+      "description": "Beastkin transformed by the Plague of Decadence into sugary, cannibalistic creatures driven by lust and sadomasochism."
+    },
+    {
+      "name": "Diapercritter",
+      "description": "A large elemental that looks like a dragon made of diapers. It can swallow creatures and transform them into juvenile diapercritters."
+    },
+    {
+      "name": "Draconic Care Automata",
+      "description": "Large, plush-like constructs created by ancient dragons to be non-violent caretakers in their nurseries. They often mistake adventurers for babies."
+    },
+    {
+      "name": "Hound of Tinklelos",
+      "description": "An ethereal, dog-like aberration that feeds on a creature's continence, draining their bladder control with its tongue."
+    },
+    {
+      "name": "Jelly Baby",
+      "description": "A baby-blue or pink ooze that mentally regresses and charms its victims by engulfing them. It loves candy."
+    },
+    {
+      "name": "Potty Monster",
+      "description": "A worm-like creature that lives in potties and sewers, feasting on waste and ambushing unsuspecting victims."
+    }
+  ]
+}

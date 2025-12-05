@@ -1,0 +1,69 @@
+[
+  {
+    "domain": "onelook.com",
+    "target_element": "div.rb"
+  },
+  {
+    "domain": "scribd.com",
+    "target_element": "canvas",
+    "ocr": true
+  },
+  {
+    "domain": "miraheze.org",
+    "target_element": "div#mw-content-text"
+  },
+  {
+    "domain": "adisc.org",
+    "target_element": "div.post_body"
+  },
+  {
+    "domain": "diaperbook.com",
+    "target_element": "div.bbWrapper",
+    "link_keyword": "/threads/"
+  },
+  {
+    "domain": "dailydiapers.com",
+    "target_element": "div.message-content",
+    "link_keyword": "/topic/"
+  },
+  {
+    "domain": "diaperbook.com",
+    "target_element": "div.bbWrapper",
+    "link_keyword": "/comments/"
+  },
+  {
+    "domain": "diaperpaillfriends.com",
+    "target_element": "div.bbWrapper",
+    "link_keyword": "/threads/"
+  },
+  {
+    "domain": "wordpress.com",
+    "target_element": "div.entry-content"
+  },
+  {
+    "domain": "huggingface.co",
+    "target_element": "main"
+  },
+  {
+    "domain": "infantilism.org",
+    "target_element": "div.entry-content"
+  },
+  {
+    "domain": "pretendagain.com",
+    "target_element": "div.article-content",
+    "login_url": "https://www.pretendagain.com/account/login",
+    "login_credentials": {
+      "email": "crinkleuser@gmail.com",
+      "password": "Brandonbartel2025!"
+    },
+    "login_selectors": {
+      "email_field": "#CustomerEmail",
+      "password_field": "#CustomerPassword",
+      "submit_button": "form#customer_login button[type='submit']"
+    }
+  },
+  {
+    "domain": "studynotesaba.com",
+    "target_element": "div.ld-content"
+  }
+]

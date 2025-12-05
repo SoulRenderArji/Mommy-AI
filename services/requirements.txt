@@ -1,0 +1,16 @@
+undetected-chromedriver
+beautifulsoup4
+selenium
+pytesseract
+Pillow
+pydantic
+google-generativeai
+python-dotenv
+lxml
+
+pytz
+ollama
+numpy
+pyaudio
+pyttsx3
+SpeechRecognition
