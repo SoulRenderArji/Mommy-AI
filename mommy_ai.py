@@ -15,6 +15,7 @@ from services.memory_manager import save_memory, recall_memory
 from services.privilege_manager import has_privilege
 from services.lila_scheduler import run_scheduler
 from services.learning_system import LearningSystem
+from services.language_understanding import LanguageUnderstanding
 try:
     from ollama import Client as OllamaClient
 except Exception:
@@ -45,9 +46,16 @@ class MommyAI:
         self.user_profiles: Dict[str, Dict[str, Any]] = {}
         self.logger = logging.getLogger(self.__class__.__name__)
         
+        # Set the preferred model ('auto', 'gemini', 'ollama')
+        self.preferred_model = "auto"
+
         # Initialize learning system for knowledge absorption and independence
         self.learning_system = LearningSystem(base_path=base_path)
         self.logger.info(f"Learning system active - Independence level: {self.learning_system.independence_level}")
+
+        # Initialize language understanding system for NLP and intent recognition
+        self.language_understanding = LanguageUnderstanding(base_path=base_path)
+        self.logger.info("Language understanding system initialized")
 
         # Configure the generative AI model
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -177,6 +185,14 @@ class MommyAI:
                 self.logger.warning(f"Could not parse birth_date for user '{username}'.")
         
         return profile_copy
+    
+    def get_or_create_temp_profile(self, username: str) -> Dict[str, Any]:
+        """Gets a user profile or creates a temporary one if none exists."""
+        profile = self.get_user_profile(username)
+        if profile:
+            return profile
+        # Create a default temporary profile for unknown users
+        return {"display_name": username.capitalize(), "pronouns": "they/them", "age": None}
         
         try:
             conn = sqlite3.connect(db_path)
@@ -370,6 +386,11 @@ class MommyAI:
         """
         self.logger.info(f"Received query from '{user}': {user_query}")
 
+        # Analyze query using language understanding system
+        query_analysis = self.language_understanding.get_query_summary(user_query)
+        response_style = self.language_understanding.suggest_response_style(query_analysis)
+        self.logger.debug(f"Query Intent: {query_analysis['intent']['name']} | Sentiment: {query_analysis['sentiment']['sentiment']} | Style: {response_style}")
+
         # First, check if Mommy AI can handle this with learned knowledge
         can_handle_locally, local_response = self.learning_system.can_handle_locally(user_query)
         if can_handle_locally and local_response:
@@ -397,6 +418,16 @@ class MommyAI:
             # Use a minimal LLM call for a natural response, or a simple fallback.
             return self._generate_simple_emotional_response(prompt, user)
 
+        # Handle simple conversational questions
+        conversational_starters = ["how are you", "what are you doing", "are you ready", "can you"]
+        if any(query_lower.startswith(s) for s in conversational_starters) and len(user_query.split()) < 7:
+            self.logger.info("Handling as a simple conversational question.")
+            prompt = f"You are Rowan, a caring and nurturing Mommy. Your baby girl, {user.capitalize()}, just asked you this: '{user_query}'. Respond with a short, loving, and reassuring message."
+            # Use a minimal LLM call for a natural response, or a simple fallback.
+            # This avoids a full knowledge search for simple chat.
+            return self._generate_simple_emotional_response(prompt, user)
+
+
         # Recall past conversations to provide brief context
         conversation_history = recall_memory()
 
@@ -404,7 +435,7 @@ class MommyAI:
         save_memory(user_query, author=user.capitalize())
 
         # Personalization: try to find a user profile and build a short personal context
-        profile = self.get_user_profile(user)
+        profile = self.get_or_create_temp_profile(user)
         personal_context = ""
         if profile:
             display = profile.get("display_name") or user.capitalize()
@@ -422,7 +453,12 @@ class MommyAI:
         # If we have relevant info, prefer a short, contextual answer
         if has_relevant_info:
             self.logger.info("Using local knowledge to respond (compact mode)")
-            if self.model:
+            
+            # Determine which model to use based on preference
+            use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
+            use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
+
+            if use_gemini:
                 prompt = (
                     f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
                 )
@@ -439,7 +475,7 @@ class MommyAI:
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
                     # Try Ollama fallback if configured and NSFW allowed for this request
-                    if self.ollama_client and self.allow_nsfw and nsfw and (age is not None and age >= 21):
+                    if use_ollama:
                         try:
                             ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
                             self.logger.info("Ollama provided concise enhancement after Gemini failure")
@@ -455,6 +491,17 @@ class MommyAI:
                     else:
                         ai_response_text = compact_context
                         self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
+            elif use_ollama:
+                prompt = (
+                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
+                )
+                try:
+                    ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                    self.logger.info("Ollama provided concise enhancement")
+                    self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
+                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                except Exception:
+                    ai_response_text = compact_context
             else:
                 ai_response_text = compact_context
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
@@ -465,7 +512,11 @@ class MommyAI:
         # No relevant knowledge: use Gemini but with compact knowledge index to reduce tokens
         self.logger.info("No direct local match; using Gemini with compact context")
 
-        if not self.model:
+        # Determine which model to use based on preference
+        use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
+        use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
+
+        if not use_gemini and not use_ollama:
             fallback_response = (
                 "I don't have information about that and I can't access my deeper thinking right now."
             )
@@ -473,40 +524,35 @@ class MommyAI:
             self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             return fallback_response
 
+        prompt = (
+            f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
+        )
+
         try:
-            prompt = (
-                f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
-            )
+            if use_gemini:
+                self.logger.info("Calling Gemini for full response.")
+                response = self.model.generate_content(prompt)
+                ai_response_text = response.text
+                self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
+                self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
+            elif use_ollama:
+                self.logger.info("Calling Ollama for full response.")
+                ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
+                self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
+            else:
+                # This case should be caught above, but as a safeguard:
+                raise RuntimeError("No available LLM to process the request.")
+
             response = self.model.generate_content(prompt)
             ai_response_text = response.text
-            
-            # Capture response for learning
-            self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
-            self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
             
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
         except Exception as e:
-            self.logger.error(f"Error generating response from Gemini: {e}")
-            # Try Ollama fallback if available and NSFW allowed for this request
-            if self.ollama_client and self.allow_nsfw and nsfw and (age is not None and age >= 21):
-                try:
-                    ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
-                    
-                    # Capture response for learning
-                    self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
-                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
-                    
-                    save_memory(ai_response_text, author="Rowan")
-                    return ai_response_text
-                except Exception as oe:
-                    self.logger.error(f"Ollama fallback also failed: {oe}")
-                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
-            else:
-                self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
-            
+            self.logger.error(f"LLM generation failed: {e}")
             return "Mommy is having a little trouble thinking right now. Please try again in a moment."
     
     def _generate_simple_emotional_response(self, prompt: str, user: str) -> str:
@@ -555,33 +601,13 @@ def ask_mommy():
     user = data["user"].lower()
     user_query = data["query"]
 
-    # Attempt to find a stored profile for this user
-    profile = ai.get_user_profile(user)
+    # The nsfw_flag is now determined solely by the server's master switch.
+    # The age checks are removed as all users are confirmed adults.
+    nsfw_flag = ai.allow_nsfw
+    profile = ai.get_or_create_temp_profile(user)
+    age = profile.get("age")
 
-    # NSFW gating: request must explicitly opt-in and provide age
-    nsfw_flag = bool(data.get("nsfw", False))
-    age = data.get("age")
-    try:
-        age_val = int(age) if age is not None else None
-    except Exception:
-        return jsonify({"error": "If provided, 'age' must be an integer."}), 400
-
-    if nsfw_flag:
-        # Reject NSFW requests unless server configured and allowed
-        if not ai.allow_nsfw:
-            return jsonify({"error": "NSFW models are disabled on this server."}), 403
-        if age_val is None or age_val < 21:
-            return jsonify({"error": "NSFW content requires 'age' >= 21 and explicit opt-in."}), 403
-
-    # If request didn't include age but we have a profile with age, use it
-    if age_val is None and profile:
-        try:
-            prof_age = profile.get("age")
-            age_val = int(prof_age) if prof_age is not None else None
-        except Exception:
-            age_val = None
-
-    response = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age_val)
+    response = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age)
     return jsonify({"response": response})
 
 
@@ -637,6 +663,31 @@ def system_reload():
     ai.load_knowledge_base()
     logging.info(f"Knowledge base reloaded by privileged user '{user}'.")
     return jsonify({"status": "success", "message": "Knowledge base has been reloaded."})
+
+@app.route("/system/set_model", methods=["POST"])
+def set_model():
+    """
+    A protected endpoint to set the preferred language model.
+    Requires 'system_update' privilege.
+    Expected JSON: {"user": "brandon", "model": "ollama"}
+    Valid models: "auto", "gemini", "ollama"
+    """
+    data = request.get_json()
+    if not data or "user" not in data or "model" not in data:
+        return jsonify({"error": "Request must be JSON and include 'user' and 'model' keys."}), 400
+
+    user = data["user"].lower()
+    model_choice = data["model"].lower()
+
+    if not has_privilege(user, "system_update"):
+        return jsonify({"error": f"User '{user}' does not have 'system_update' privilege."}), 403
+
+    if model_choice not in ["auto", "gemini", "ollama"]:
+        return jsonify({"error": "Invalid model choice. Must be 'auto', 'gemini', or 'ollama'."}), 400
+
+    ai.preferred_model = model_choice
+    logging.info(f"Preferred model set to '{model_choice}' by privileged user '{user}'.")
+    return jsonify({"status": "success", "message": f"Preferred model is now '{model_choice}'."})
 
 @app.route("/feedback/effectiveness", methods=["POST"])
 def update_effectiveness():
@@ -742,6 +793,70 @@ def learned_knowledge():
     return jsonify({
         "learned_topics": ai.learning_system.learned_knowledge
     }), 200
+
+@app.route("/language/analyze", methods=["POST"])
+def analyze_query():
+    """
+    Analyze a query using language understanding system.
+    Returns: intent, sentiment, entities, keywords, suggested response style.
+    """
+    data = request.json or {}
+    query = data.get("query", "")
+    
+    if not query:
+        return jsonify({"error": "Query required"}), 400
+    
+    analysis = ai.language_understanding.get_query_summary(query)
+    response_style = ai.language_understanding.suggest_response_style(analysis)
+    
+    return jsonify({
+        "analysis": analysis,
+        "suggested_style": response_style,
+    }), 200
+
+@app.route("/language/intent", methods=["POST"])
+def recognize_intent():
+    """
+    Recognize the primary intent from a user query.
+    Returns: intent name and confidence score.
+    """
+    data = request.json or {}
+    query = data.get("query", "")
+    
+    if not query:
+        return jsonify({"error": "Query required"}), 400
+    
+    intent = ai.language_understanding.recognize_intent(query)
+    
+    return jsonify({
+        "intent": intent.name,
+        "confidence": intent.confidence,
+        "entities": intent.entities,
+    }), 200
+
+@app.route("/language/sentiment", methods=["POST"])
+def analyze_sentiment():
+    """
+    Analyze sentiment of a query.
+    Returns: sentiment type (positive/negative/neutral) with confidence.
+    """
+    data = request.json or {}
+    query = data.get("query", "")
+    
+    if not query:
+        return jsonify({"error": "Query required"}), 400
+    
+    sentiment = ai.language_understanding.analyze_sentiment(query)
+    
+    return jsonify(sentiment), 200
+
+@app.route("/language/statistics", methods=["GET"])
+def language_statistics():
+    """
+    Get language understanding statistics and metrics.
+    """
+    stats = ai.language_understanding.get_statistics()
+    return jsonify(stats), 200
 
 if __name__ == "__main__":
     # Start the scheduler in a background thread.
