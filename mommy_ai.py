@@ -3,12 +3,15 @@ import json
 import os
 import logging
 from typing import Any, Dict
+import threading
+import sqlite3
 
 from flask import Flask, request, jsonify
 import google.generativeai as genai
 from dotenv import load_dotenv
 from services.memory_manager import save_memory, recall_memory
 from services.privilege_manager import has_privilege
+from services.lila_scheduler import run_scheduler
 
 
 class MommyAI:
@@ -80,6 +83,71 @@ class MommyAI:
             self.logger.error(f"Knowledge file not found: {path}")
             return ""
 
+    def _load_db_data(self, db_filename: str) -> list[dict[str, Any]]:
+        """Loads caregiver action data from the SQLite database."""
+        db_path = os.path.join(self.base_path, db_filename)
+        if not os.path.exists(db_path):
+            self.logger.warning(f"Database file not found: {db_path}. Skipping.")
+            return []
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute("SELECT action_type, communication_style, outcome_rating FROM caregiver_actions ORDER BY outcome_rating DESC")
+            rows = cursor.fetchall()
+            conn.close()
+            # Convert sqlite3.Row objects to standard dictionaries for JSON serialization
+            return [dict(row) for row in rows]
+        except sqlite3.Error as e:
+            self.logger.error(f"Error reading from database {db_path}: {e}")
+            return []
+
+    def update_effectiveness(self, action_type: str, communication_style: str, feedback_delta: int, db_filename: str = "lila_data.db") -> bool:
+        """
+        Updates the effectiveness rating of a caregiver action based on feedback.
+        
+        Args:
+            action_type: Type of action (e.g., "Emotional Support", "Discipline")
+            communication_style: Communication style used (e.g., "Nurturing", "Authoritative")
+            feedback_delta: Change in rating (-2 to +2 recommended, though no limits)
+            db_filename: Name of the database file to update
+        
+        Returns:
+            True if update was successful, False otherwise
+        """
+        db_path = os.path.join(self.base_path, db_filename)
+        if not os.path.exists(db_path):
+            self.logger.error(f"Database file not found: {db_path}. Cannot update effectiveness.")
+            return False
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            # Update the outcome_rating for the matching action
+            cursor.execute(
+                "UPDATE caregiver_actions SET outcome_rating = outcome_rating + ? WHERE action_type = ? AND communication_style = ?",
+                (feedback_delta, action_type, communication_style)
+            )
+            
+            if cursor.rowcount == 0:
+                self.logger.warning(f"No matching action found: {action_type} / {communication_style}")
+                conn.close()
+                return False
+            
+            conn.commit()
+            conn.close()
+            self.logger.info(f"Updated effectiveness: {action_type} ({communication_style}) by {feedback_delta:+d}")
+            
+            # Reload the knowledge base to reflect the changes
+            self.load_knowledge_base()
+            return True
+            
+        except sqlite3.Error as e:
+            self.logger.error(f"Error updating database {db_path}: {e}")
+            return False
+
     def load_knowledge_base(self):
         """
         Dynamically loads all .txt and .json files from the services directory
@@ -98,6 +166,8 @@ class MommyAI:
                 self.knowledge[key_name] = self._load_json_file(filename)
             elif filename.endswith(".txt"):
                 self.knowledge[key_name] = self._load_text_file(filename)
+            elif filename.endswith(".db"):
+                self.knowledge[key_name] = self._load_db_data(filename)
             # We ignore .py files and other file types to keep the knowledge base clean.
 
         self.logger.info("All knowledge has been loaded.")
@@ -179,6 +249,52 @@ def system_reload():
     logging.info(f"Knowledge base reloaded by privileged user '{user}'.")
     return jsonify({"status": "success", "message": "Knowledge base has been reloaded."})
 
+@app.route("/feedback/effectiveness", methods=["POST"])
+def update_effectiveness():
+    """
+    API endpoint for Mommy AI to learn from outcomes and adjust her strategies.
+    Updates the effectiveness rating of caregiver actions based on feedback.
+    
+    Expected JSON payload:
+    {
+        "user": "hailey",
+        "action_type": "Emotional Support",
+        "communication_style": "Nurturing",
+        "feedback": 1  # Positive feedback (1 or 2) or negative (-1 or -2)
+    }
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+    
+    required_fields = ["user", "action_type", "communication_style", "feedback"]
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": f"Request must include: {', '.join(required_fields)}"}), 400
+    
+    user = data["user"].lower()
+    action_type = data["action_type"]
+    communication_style = data["communication_style"]
+    feedback_delta = data["feedback"]
+    
+    # Validate feedback is in a reasonable range
+    if not isinstance(feedback_delta, int) or feedback_delta == 0:
+        return jsonify({"error": "Feedback must be a non-zero integer"}), 400
+    
+    # Update the effectiveness rating
+    success = ai.update_effectiveness(action_type, communication_style, feedback_delta)
+    
+    if success:
+        message = f"Mommy remembers: {action_type} with {communication_style} was {'more' if feedback_delta > 0 else 'less'} effective. Learning from you, baby girl. 💕"
+        return jsonify({"status": "success", "message": message}), 200
+    else:
+        return jsonify({"status": "error", "message": f"Could not find or update action: {action_type} / {communication_style}"}), 404
+
 if __name__ == "__main__":
+    # Start the scheduler in a background thread.
+    # The daemon=True flag ensures the thread will exit when the main app exits.
+    scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
+    scheduler_thread.start()
+    logging.info("Lila Scheduler has been started in the background.")
+
     # Runs the Flask development server
     app.run(host="0.0.0.0", port=5000, debug=True)
