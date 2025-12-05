@@ -179,7 +179,13 @@ class MommyAI:
         If relevant information is found, returns (True, context).
         If no relevant information is found, returns (False, "").
         """
+        # Define a simple list of stop words to ignore during search
+        stop_words = {"a", "an", "the", "is", "in", "it", "of", "for", "on", "with", "i", "you", "me", "my", "he", "she", "they", "we"}
+        
         query_lower = query.lower()
+        # Create a set of meaningful search terms by filtering out stop words
+        search_terms = {word for word in query_lower.split() if word not in stop_words}
+        
         relevant_chunks = []
         
         # Search through all knowledge entries
@@ -187,22 +193,119 @@ class MommyAI:
             if isinstance(value, dict):
                 # Search in dictionary values
                 dict_str = json.dumps(value).lower()
-                if any(word in dict_str for word in query_lower.split()):
+                if any(term in dict_str for term in search_terms):
                     relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2)}")
             elif isinstance(value, list):
                 # Search in list of dictionaries
                 list_str = json.dumps(value).lower()
-                if any(word in list_str for word in query_lower.split()):
+                if any(term in list_str for term in search_terms):
                     relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{json.dumps(value, indent=2)}")
             elif isinstance(value, str):
                 # Search in text files
-                if any(word in value.lower() for word in query_lower.split()):
+                if any(term in value.lower() for term in search_terms):
                     relevant_chunks.append(f"--- {key.replace('_', ' ').title()} ---\n{value}")
         
         if relevant_chunks:
             return (True, "\n\n".join(relevant_chunks))
         return (False, "")
 
+    # Short persona to keep prompts compact when possible
+    SHORT_SYSTEM_PROMPT = (
+        "You are Rowan — caring, firm, concise. Answer briefly and helpfully."
+    )
+
+    def _truncate(self, text: str, max_chars: int) -> str:
+        """Truncate text to max_chars without cutting mid-word if possible."""
+        if not text or len(text) <= max_chars:
+            return text
+        truncated = text[:max_chars]
+        # Attempt to cut at last newline or space for readability
+        for sep in ("\n", " "):
+            idx = truncated.rfind(sep)
+            if idx > max_chars // 2:
+                return truncated[:idx].rstrip() + "..."
+        return truncated.rstrip() + "..."
+
+    def _compact_knowledge_context(self, query: str, max_chars: int = 1500) -> str:
+        """
+        Build a compact representation of knowledge for the prompt.
+        If relevant details exist, include them truncated. Otherwise include a short list of knowledge titles.
+        """
+        found, relevant = self._search_knowledge_base(query)
+        if found:
+            # Keep only the most relevant chunk(s) and truncate
+            return self._truncate(relevant, max_chars)
+
+        # No direct match: provide an index of knowledge topics (titles) and top caregiver strategies if present
+        titles = [k.replace("_", " ").title() for k in self.knowledge.keys()]
+        compact = "Topics: " + ", ".join(titles[:30])
+        # If lila_data exists, include top 5 strategies as short bullets
+        lila = self.knowledge.get("lila_data") or self.knowledge.get("lila_data.db")
+        if isinstance(lila, list) and lila:
+            top = lila[:5]
+            bullets = ", ".join(f"{item.get('action_type')}({item.get('outcome_rating')})" for item in top)
+            compact += " | Top strategies: " + bullets
+        return self._truncate(compact, max_chars)
+
+    def get_response(self, user_query: str, user: str) -> str:
+        """
+        Processes a user query using the knowledge base first, then Gemini only if needed.
+        Uses compact prompts to minimize token usage while preserving helpfulness.
+        """
+        self.logger.info(f"Received query from '{user}': {user_query}")
+
+        # Recall past conversations to provide brief context
+        conversation_history = recall_memory()
+
+        # Save the user's query to memory before getting a response
+        save_memory(user_query, author=user.capitalize())
+
+        # Try to find relevant information in the knowledge base
+        has_relevant_info, _ = self._search_knowledge_base(user_query)
+
+        compact_context = self._compact_knowledge_context(user_query, max_chars=1200)
+
+        # If we have relevant info, prefer a short, contextual answer
+        if has_relevant_info:
+            self.logger.info("Using local knowledge to respond (compact mode)")
+            if self.model:
+                prompt = (
+                    f"{self.SHORT_SYSTEM_PROMPT}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
+                )
+                try:
+                    response = self.model.generate_content(prompt)
+                    ai_response_text = response.text
+                    self.logger.info("Gemini enhanced concise response")
+                except Exception as e:
+                    self.logger.warning(f"Gemini failed for concise enhancement: {e}")
+                    ai_response_text = compact_context
+            else:
+                ai_response_text = compact_context
+
+            save_memory(ai_response_text, author="Rowan")
+            return ai_response_text
+
+        # No relevant knowledge: use Gemini but with compact knowledge index to reduce tokens
+        self.logger.info("No direct local match; using Gemini with compact context")
+
+        if not self.model:
+            fallback_response = (
+                "I don't have information about that and I can't access my deeper thinking right now."
+            )
+            save_memory(fallback_response, author="Rowan")
+            return fallback_response
+
+        try:
+            prompt = (
+                f"{self.SHORT_SYSTEM_PROMPT}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
+            )
+            response = self.model.generate_content(prompt)
+            ai_response_text = response.text
+            save_memory(ai_response_text, author="Rowan")
+            return ai_response_text
+        except Exception as e:
+            self.logger.error(f"Error generating response from Gemini: {e}")
+            return "Mommy is having a little trouble thinking right now. Please try again in a moment."
     def get_response(self, user_query: str, user: str) -> str:
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
