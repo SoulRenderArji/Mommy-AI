@@ -18,6 +18,7 @@ from services.learning_system import LearningSystem
 from services.language_understanding import LanguageUnderstanding
 from services.cognitive_engine import CognitiveEngine
 from dataclasses import asdict
+from services.toolkit import run_shell, read_file, write_file, git_commit, gui_action
 try:
     from ollama import Client as OllamaClient
 except Exception:
@@ -62,6 +63,10 @@ class MommyAI:
         # Initialize cognitive engine (decision maker / thought process simulator)
         self.cognitive_engine = CognitiveEngine(language_understanding=self.language_understanding, learning_system=self.learning_system)
         self.logger.info("Cognitive engine initialized")
+
+        # Toolkit helpers (stateless wrappers) for shell/file/gui actions
+        # Important: endpoints that expose these must check privileges and user preferences
+        self.toolkit = None  # kept for clarity; functions are imported at module level
 
         # Configure the generative AI model
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -384,7 +389,7 @@ class MommyAI:
             self.logger.error(f"Ollama generate error: {e}")
             raise
 
-    def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None, explain: bool = False):
+    def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None, explain: bool = False, trace_level: str = "summary"):
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
         Uses compact prompts to minimize token usage while preserving helpfulness.
@@ -465,6 +470,8 @@ class MommyAI:
             self.logger.info("Cognitive Engine chose 'local'. Responding from learned knowledge.")
             self.learning_system.update_independence_metrics(handled_locally=True)
             save_memory(ai_response_text, author="Rowan")
+            if explain:
+                return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
             return ai_response_text
 
         # Strategy 2: Use a hybrid approach (local context + LLM) if the engine decides it's best.
@@ -523,6 +530,8 @@ class MommyAI:
                 ai_response_text = compact_context
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
 
+            if explain:
+                return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
 
@@ -575,6 +584,8 @@ class MommyAI:
                 # This case should be caught above, but as a safeguard:
                 raise RuntimeError("No available LLM to process the request.")
 
+            if explain:
+                return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
         except Exception as e:
@@ -614,18 +625,15 @@ ai.load_knowledge_base()
 
 @app.route("/ask", methods=["POST"])
 def ask_mommy():
-    """API endpoint to interact with the AI.
-
-    Optional JSON fields for NSFW requests:
-      - "nsfw": true/false
-      - "age": integer (must be >=21 to request NSFW)
-    """
+    """API endpoint to interact with the AI."""
     data = request.get_json()
     if not data or "query" not in data or "user" not in data:
         return jsonify({"error": "Request body must be JSON and include 'user' and 'query' keys."}), 400
 
     user = data["user"].lower()
     user_query = data["query"]
+    explain = bool(data.get("explain", False))
+    trace_level = data.get("trace_level", "summary")
 
     # The nsfw_flag is now determined solely by the server's master switch.
     # The age checks are removed as all users are confirmed adults.
@@ -633,21 +641,11 @@ def ask_mommy():
     profile = ai.get_or_create_temp_profile(user)
     age = profile.get("age")
 
-    explain = bool(data.get("explain", False))
-    result = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age, explain=explain)
+    result = ai.get_response(user_query, user=user, explain=explain, trace_level=trace_level)
 
     # If get_response returned a dict (already included trace), pass it through
     if isinstance(result, dict):
         return jsonify(result)
-
-    # Otherwise, package the response. If explanation requested, attach cognitive trace.
-    if explain:
-        try:
-            trace = ai.cognitive_engine.decide(user_query, user, ai.get_or_create_temp_profile(user))
-            return jsonify({"response": result, "cognitive_trace": asdict(trace)})
-        except Exception:
-            # If trace generation fails, still return the response
-            return jsonify({"response": result})
 
     return jsonify({"response": result})
 
@@ -678,6 +676,40 @@ def create_or_update_profile():
     ai.user_profiles[username] = profile
     ai._save_user_profiles()
     return jsonify({"status": "success", "profile": {username: profile}}), 200
+
+
+@app.route("/user/profile/preferences", methods=["POST"])
+def set_user_preferences():
+    """
+    Set cognitive preferences for a user profile.
+    Expected JSON:
+    {
+      "username": "hailey",
+      "cognitive_preferences": {
+          "creativity_bias": 0.5,
+          "threshold_local_confidence": 0.7,
+          "threshold_accept_as_fact": 0.85,
+          "conservative": false
+      }
+    }
+    """
+    data = request.get_json()
+    if not data or "username" not in data:
+        return jsonify({"error": "Request must be JSON and include 'username'"}), 400
+
+    username = data["username"].lower()
+    prefs = data.get("cognitive_preferences", {})
+
+    profile = ai.get_user_profile(username) or {}
+    profile.setdefault("cognitive_preferences", {})
+    profile["cognitive_preferences"].update(prefs)
+
+    ai.user_profiles[username] = profile
+    ai._save_user_profiles()
+    return jsonify({"status": "success", "profile": {username: profile}}), 200
+
+
+@app.route("/tool/execute", methods=["POST"])
 
 
 @app.route("/user/profile/<username>", methods=["GET"])
