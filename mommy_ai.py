@@ -444,9 +444,6 @@ class MommyAI:
         else:
             personal_context = f"User: {user.capitalize()}"
 
-        # Try to find relevant information in the knowledge base
-        has_relevant_info, _ = self._search_knowledge_base(user_query)
-
         compact_context = self._compact_knowledge_context(user_query, max_chars=1200)
 
         # Run the cognitive engine to decide strategy (local / hybrid / llm / creative)
@@ -459,54 +456,55 @@ class MommyAI:
             trace = None
             selected_type = None
 
-        # If cognitive engine selected local and we have a local response, return it immediately
-        if selected_type == "local" and trace and trace.perception.get("local_response"):
-            local_response = trace.perception.get("local_response")
-            self.logger.info("Using learned knowledge as selected by cognitive engine")
-            save_memory(user_query, author=user.capitalize())
-            save_memory(local_response, author="Rowan")
+        # Whether we should prompt the LLM in creative mode
+        creative_mode = (selected_type == "creative")
+
+        # Strategy 1: Use local knowledge if the cognitive engine decides it's best.
+        if selected_type == "local" and trace and trace.perception.get("local_response_exists"):
+            ai_response_text = trace.perception.get("local_response")
+            self.logger.info("Cognitive Engine chose 'local'. Responding from learned knowledge.")
             self.learning_system.update_independence_metrics(handled_locally=True)
-            if explain:
-                return {"response": local_response, "cognitive_trace": asdict(trace)}
-            return local_response
+            save_memory(ai_response_text, author="Rowan")
+            return ai_response_text
 
-        creative_mode = selected_type == "creative"
-
-        # If we have relevant info, prefer a short, contextual answer
-        if has_relevant_info:
-            self.logger.info("Using local knowledge to respond (compact mode)")
-            
+        # Strategy 2: Use a hybrid approach (local context + LLM) if the engine decides it's best.
+        if selected_type == "hybrid":
+            self.logger.info("Cognitive Engine chose 'hybrid'. Using local knowledge to inform LLM.")
+            # Build prompt using cognitive engine templates (short system prompt)
+            prompt, system_msg = self.cognitive_engine.build_prompt(
+                option_type="hybrid",
+                query=user_query,
+                user=user.capitalize(),
+                personal_context=personal_context,
+                compact_context=compact_context,
+                response_style=response_style,
+                system_prompt=self.SHORT_SYSTEM_PROMPT,
+                profile=profile,
+                creativity_mode=creative_mode,
+            )
             # Determine which model to use based on preference
             use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
             use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
-
             if use_gemini:
-                prompt = (
-                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone and respond concisely (one short paragraph)."
-                )
                 try:
                     response = self.model.generate_content(prompt)
                     ai_response_text = response.text
                     self.logger.info("Gemini enhanced concise response")
-                    
                     # Capture response for learning
                     self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
                     self.learning_system.extract_knowledge(0, user_query, ai_response_text)
                     self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
-                    
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
                     # Try Ollama fallback if configured and NSFW allowed for this request
                     if use_ollama:
                         try:
-                            ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                            ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                             self.logger.info("Ollama provided concise enhancement after Gemini failure")
-                            
                             # Capture response for learning
                             self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
                             self.learning_system.extract_knowledge(0, user_query, ai_response_text)
                             self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
-                            
                         except Exception:
                             ai_response_text = compact_context
                             self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
@@ -514,11 +512,8 @@ class MommyAI:
                         ai_response_text = compact_context
                         self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             elif use_ollama:
-                prompt = (
-                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone and respond concisely (one short paragraph)."
-                )
                 try:
-                    ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                    ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                     self.logger.info("Ollama provided concise enhancement")
                     self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
                     self.learning_system.extract_knowledge(0, user_query, ai_response_text)
@@ -531,10 +526,9 @@ class MommyAI:
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
 
-        # No relevant knowledge: use Gemini but with compact knowledge index to reduce tokens
-        self.logger.info("No direct local match; using Gemini with compact context")
+        # Strategy 3: Use a full LLM call if the engine decides it's necessary (or as a fallback).
+        self.logger.info(f"Cognitive Engine chose '{selected_type}'. Using full LLM call.")
 
-        # Determine which model to use based on preference
         use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
         use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
 
@@ -547,7 +541,20 @@ class MommyAI:
             return fallback_response
 
         prompt = (
-            f"{self.SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone. If you need to ask for clarification, do so briefly, then answer."
+            f"{self.SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone. If you need to ask for clarification, do so briefly, then answer."
+        )
+
+        # Build prompt for chosen strategy using cognitive engine templates
+        prompt, system_msg = self.cognitive_engine.build_prompt(
+            option_type=(selected_type or "llm"),
+            query=user_query,
+            user=user.capitalize(),
+            personal_context=personal_context,
+            compact_context=compact_context,
+            response_style=response_style,
+            system_prompt=self.SYSTEM_PROMPT,
+            profile=profile,
+            creativity_mode=creative_mode,
         )
 
         try:
@@ -560,7 +567,7 @@ class MommyAI:
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
             elif use_ollama:
                 self.logger.info("Calling Ollama for full response.")
-                ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                 self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
                 self.learning_system.extract_knowledge(0, user_query, ai_response_text)
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
@@ -568,9 +575,6 @@ class MommyAI:
                 # This case should be caught above, but as a safeguard:
                 raise RuntimeError("No available LLM to process the request.")
 
-            response = self.model.generate_content(prompt)
-            ai_response_text = response.text
-            
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
         except Exception as e:

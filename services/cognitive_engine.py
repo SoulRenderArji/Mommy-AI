@@ -42,6 +42,24 @@ class CognitiveEngine:
         self.threshold_local_confidence = self.config.get("threshold_local_confidence", 0.7)
         self.threshold_accept_as_fact = self.config.get("threshold_accept_as_fact", 0.85)
         self.creativity_bias = self.config.get("creativity_bias", 0.2)  # 0..1, higher means more creative options
+        # Prompt templates used by Mommy AI for different strategies. Templates accept named fields:
+        # {system_prompt}, {personal_context}, {compact_context}, {user}, {query}, {response_style}
+        self.prompt_templates = {
+            "hybrid": (
+                "{system_prompt}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user}: {query}\n\n"
+                "Adopt a {response_style} tone and respond concisely (one short paragraph)."
+            ),
+            "creative": (
+                "{system_prompt}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user}: {query}\n\n"
+                "You are encouraged to think creatively and propose unconventional, useful workarounds or ideas. "
+                "If suggesting something uncertain, mark it as a suggestion and recommend verification. "
+                "Adopt a {response_style} tone."
+            ),
+            "llm": (
+                "{system_prompt}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user}: {query}\n\n"
+                "Adopt a {response_style} tone. If you need to ask for clarification, do so briefly, then answer."
+            ),
+        }
 
     def _perceive(self, query: str, user: str, profile: Optional[Dict]) -> Dict[str, Any]:
         # Run language understanding if available
@@ -79,6 +97,9 @@ class CognitiveEngine:
         # Produce candidate strategies for answering the query. Each option has a type and score.
         options = []
 
+        # Use configured creativity bias for option scoring (may be overridden by profile)
+        creativity_bias = self.creativity_bias
+
         # Option: Use local learned knowledge (if available)
         if perception.get("can_handle_locally"):
             options.append({
@@ -91,14 +112,14 @@ class CognitiveEngine:
         options.append({
             "type": "hybrid",
             "description": "Search local knowledge and ask LLM to summarize with context",
-            "score": 0.7
+            "score": 0.7 + (creativity_bias * 0.05)
         })
 
         # Option: Use external LLM directly
         options.append({
             "type": "llm",
             "description": "Answer using external LLM (Gemini/Ollama)",
-            "score": 0.6
+            "score": 0.6 + (creativity_bias * 0.05)
         })
 
         # If the intent is emotional or requires empathy, boost options that favor empathy and short responses
@@ -110,8 +131,8 @@ class CognitiveEngine:
                     opt["score"] += 0.05
 
         # Creativity: sometimes add an "outside the box" option with lower baseline score
-        if self.creativity_bias > 0.0:
-            creative_score = 0.4 + (self.creativity_bias * 0.4)  # in [0.4,0.8]
+        if creativity_bias > 0.0:
+            creative_score = 0.4 + (creativity_bias * 0.4)  # in [0.4,0.8]
             options.append({
                 "type": "creative",
                 "description": "Generate creative or non-standard suggestions and workarounds",
@@ -139,15 +160,66 @@ class CognitiveEngine:
 
         return selected, confidence, notes
 
+    def build_prompt(self,
+                     option_type: str,
+                     query: str,
+                     user: str,
+                     personal_context: str,
+                     compact_context: str,
+                     response_style: str,
+                     system_prompt: Optional[str] = None,
+                     profile: Optional[Dict] = None,
+                     creativity_mode: bool = False) -> Tuple[str, Optional[str]]:
+        """
+        Build a prompt string and optional system message based on the chosen option_type and templates.
+        Returns: (prompt_text, system_message)
+        """
+        # Choose template
+        tpl = self.prompt_templates.get(option_type, self.prompt_templates.get("llm"))
+
+        # If creative mode requested, prefer creative template
+        if creativity_mode:
+            tpl = self.prompt_templates.get("creative", tpl)
+
+        system_msg = system_prompt
+
+        prompt_text = tpl.format(
+            system_prompt=(system_prompt or ""),
+            personal_context=(personal_context or ""),
+            compact_context=(compact_context or ""),
+            user=user,
+            query=query,
+            response_style=response_style,
+        )
+
+        # If profile suggests extra constraints (e.g., conservative_user), we can append guidance
+        if profile and profile.get("cognitive_preferences", {}).get("conservative", False):
+            prompt_text += "\n\nNote: Be conservative in assertions; clearly label uncertain suggestions."
+
+        return prompt_text, system_msg
+
     def decide(self, query: str, user: str, profile: Optional[Dict] = None) -> DecisionTrace:
         """
         Main entry point. Returns a DecisionTrace dataclass containing a summarized trace
         of perception, interpretation, candidate options, the selected option, confidence, and notes.
         """
         start = time.time()
+        # Apply per-user overrides from profile if present (do not mutate engine defaults)
+        user_prefs = profile.get("cognitive_preferences", {}) if profile else {}
+        local_threshold = user_prefs.get("threshold_local_confidence", self.threshold_local_confidence)
+        accept_threshold = user_prefs.get("threshold_accept_as_fact", self.threshold_accept_as_fact)
+        creativity_bias = user_prefs.get("creativity_bias", self.creativity_bias)
+
         perception = self._perceive(query, user, profile)
         interpretation = self._interpret(perception)
-        options = self._generate_options(perception, interpretation)
+        # Generate options using possible per-user creativity bias
+        # Temporarily use the per-user creativity bias by passing it via attribute
+        original_creativity = self.creativity_bias
+        try:
+            self.creativity_bias = creativity_bias
+            options = self._generate_options(perception, interpretation)
+        finally:
+            self.creativity_bias = original_creativity
         selected, confidence, notes = self._evaluate_and_select(options, interpretation)
 
         trace = DecisionTrace(
