@@ -38,6 +38,8 @@ class MommyAI:
         """
         self.base_path = base_path
         self.knowledge: Dict[str, Any] = {}
+        # user_profiles maps lowercase username -> profile dict
+        self.user_profiles: Dict[str, Dict[str, Any]] = {}
         self.logger = logging.getLogger(self.__class__.__name__)
 
         # Configure the generative AI model
@@ -108,6 +110,36 @@ class MommyAI:
         if not os.path.exists(db_path):
             self.logger.warning(f"Database file not found: {db_path}. Skipping.")
             return []
+
+    def _load_user_profiles(self):
+        """Load user profiles from services/user_profiles.json if present."""
+        profiles_path = os.path.join(self.base_path, "user_profiles.json")
+        if os.path.exists(profiles_path):
+            try:
+                with open(profiles_path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    # normalize keys to lowercase usernames
+                    self.user_profiles = {k.lower(): v for k, v in data.items()}
+                    self.logger.info(f"Loaded {len(self.user_profiles)} user profiles")
+            except Exception as e:
+                self.logger.exception(f"Failed to load user profiles: {e}")
+                self.user_profiles = {}
+        else:
+            self.user_profiles = {}
+
+    def _save_user_profiles(self):
+        profiles_path = os.path.join(self.base_path, "user_profiles.json")
+        try:
+            with open(profiles_path, "w", encoding="utf-8") as f:
+                json.dump(self.user_profiles, f, indent=2, ensure_ascii=False)
+            self.logger.info(f"Saved {len(self.user_profiles)} user profiles")
+        except Exception as e:
+            self.logger.exception(f"Failed to save user profiles: {e}")
+
+    def get_user_profile(self, username: str) -> Dict[str, Any] | None:
+        if not username:
+            return None
+        return self.user_profiles.get(username.lower())
         
         try:
             conn = sqlite3.connect(db_path)
@@ -188,6 +220,12 @@ class MommyAI:
             elif filename.endswith(".db"):
                 self.knowledge[key_name] = self._load_db_data(filename)
             # We ignore .py files and other file types to keep the knowledge base clean.
+
+        # Load user profiles (optional)
+        self._load_user_profiles()
+
+        # Expose profiles in the knowledge map for convenience
+        self.knowledge["user_profiles"] = self.user_profiles
 
         self.logger.info("All knowledge has been loaded.")
 
@@ -300,6 +338,17 @@ class MommyAI:
         # Save the user's query to memory before getting a response
         save_memory(user_query, author=user.capitalize())
 
+        # Personalization: try to find a user profile and build a short personal context
+        profile = self.get_user_profile(user)
+        personal_context = ""
+        if profile:
+            display = profile.get("display_name") or user.capitalize()
+            pronouns = profile.get("pronouns") or "they/them"
+            p_age = profile.get("age")
+            personal_context = f"User: {display} (username: {user}, pronouns: {pronouns}" + (f", age: {p_age})" if p_age is not None else ")")
+        else:
+            personal_context = f"User: {user.capitalize()}"
+
         # Try to find relevant information in the knowledge base
         has_relevant_info, _ = self._search_knowledge_base(user_query)
 
@@ -310,7 +359,7 @@ class MommyAI:
             self.logger.info("Using local knowledge to respond (compact mode)")
             if self.model:
                 prompt = (
-                    f"{self.SHORT_SYSTEM_PROMPT}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
+                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
                 )
                 try:
                     response = self.model.generate_content(prompt)
@@ -345,7 +394,7 @@ class MommyAI:
 
         try:
             prompt = (
-                f"{self.SHORT_SYSTEM_PROMPT}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
+                f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
             )
             response = self.model.generate_content(prompt)
             ai_response_text = response.text
@@ -390,6 +439,9 @@ def ask_mommy():
     user = data["user"].lower()
     user_query = data["query"]
 
+    # Attempt to find a stored profile for this user
+    profile = ai.get_user_profile(user)
+
     # NSFW gating: request must explicitly opt-in and provide age
     nsfw_flag = bool(data.get("nsfw", False))
     age = data.get("age")
@@ -405,8 +457,52 @@ def ask_mommy():
         if age_val is None or age_val < 21:
             return jsonify({"error": "NSFW content requires 'age' >= 21 and explicit opt-in."}), 403
 
+    # If request didn't include age but we have a profile with age, use it
+    if age_val is None and profile:
+        try:
+            prof_age = profile.get("age")
+            age_val = int(prof_age) if prof_age is not None else None
+        except Exception:
+            age_val = None
+
     response = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age_val)
     return jsonify({"response": response})
+
+
+@app.route("/user/profile", methods=["POST"])
+def create_or_update_profile():
+    """Create or update a user profile.
+
+    Expected JSON:
+    {
+      "username": "brandon",
+      "display_name": "Brandon",
+      "age": 30,
+      "pronouns": "he/him"
+    }
+    """
+    data = request.get_json()
+    if not data or "username" not in data:
+        return jsonify({"error": "Request must be JSON and include 'username'"}), 400
+
+    username = data["username"].lower()
+    profile = {
+        "display_name": data.get("display_name") or username.capitalize(),
+        "age": data.get("age"),
+        "pronouns": data.get("pronouns") or "they/them",
+    }
+
+    ai.user_profiles[username] = profile
+    ai._save_user_profiles()
+    return jsonify({"status": "success", "profile": {username: profile}}), 200
+
+
+@app.route("/user/profile/<username>", methods=["GET"])
+def get_profile(username: str):
+    prof = ai.get_user_profile(username)
+    if not prof:
+        return jsonify({"error": "Profile not found"}), 404
+    return jsonify({username.lower(): prof}), 200
 
 @app.route("/system/reload", methods=["POST"])
 def system_reload():
