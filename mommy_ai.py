@@ -65,6 +65,8 @@ class MommyAI:
         # Ollama fallback (optional). Configure with .env: OLLAMA_ENABLED=true, OLLAMA_MODEL=dolphin-nsfw
         ollama_enabled = os.getenv("OLLAMA_ENABLED", "false").lower() in ("1", "true", "yes")
         self.ollama_model = os.getenv("OLLAMA_MODEL", "dolphin-nsfw")
+        # Require explicit opt-in to use NSFW models
+        self.allow_nsfw = os.getenv("ALLOW_NSFW", "false").lower() in ("1", "true", "yes")
         if ollama_enabled and OllamaClient is not None:
             try:
                 self.ollama_client = OllamaClient()
@@ -285,7 +287,7 @@ class MommyAI:
             self.logger.error(f"Ollama generate error: {e}")
             raise
 
-    def get_response(self, user_query: str, user: str) -> str:
+    def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None) -> str:
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
         Uses compact prompts to minimize token usage while preserving helpfulness.
@@ -316,8 +318,8 @@ class MommyAI:
                     self.logger.info("Gemini enhanced concise response")
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
-                    # Try Ollama fallback if configured
-                    if self.ollama_client:
+                    # Try Ollama fallback if configured and NSFW allowed for this request
+                    if self.ollama_client and self.allow_nsfw and nsfw and (age is not None and age >= 21):
                         try:
                             ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
                             self.logger.info("Ollama provided concise enhancement after Gemini failure")
@@ -351,8 +353,8 @@ class MommyAI:
             return ai_response_text
         except Exception as e:
             self.logger.error(f"Error generating response from Gemini: {e}")
-            # Try Ollama fallback if available
-            if self.ollama_client:
+            # Try Ollama fallback if available and NSFW allowed for this request
+            if self.ollama_client and self.allow_nsfw and nsfw and (age is not None and age >= 21):
                 try:
                     ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
                     save_memory(ai_response_text, author="Rowan")
@@ -375,14 +377,35 @@ ai.load_knowledge_base()
 
 @app.route("/ask", methods=["POST"])
 def ask_mommy():
-    """API endpoint to interact with the AI."""
+    """API endpoint to interact with the AI.
+
+    Optional JSON fields for NSFW requests:
+      - "nsfw": true/false
+      - "age": integer (must be >=21 to request NSFW)
+    """
     data = request.get_json()
     if not data or "query" not in data or "user" not in data:
         return jsonify({"error": "Request body must be JSON and include 'user' and 'query' keys."}), 400
 
     user = data["user"].lower()
     user_query = data["query"]
-    response = ai.get_response(user_query, user=user)
+
+    # NSFW gating: request must explicitly opt-in and provide age
+    nsfw_flag = bool(data.get("nsfw", False))
+    age = data.get("age")
+    try:
+        age_val = int(age) if age is not None else None
+    except Exception:
+        return jsonify({"error": "If provided, 'age' must be an integer."}), 400
+
+    if nsfw_flag:
+        # Reject NSFW requests unless server configured and allowed
+        if not ai.allow_nsfw:
+            return jsonify({"error": "NSFW models are disabled on this server."}), 403
+        if age_val is None or age_val < 21:
+            return jsonify({"error": "NSFW content requires 'age' >= 21 and explicit opt-in."}), 403
+
+    response = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age_val)
     return jsonify({"response": response})
 
 @app.route("/system/reload", methods=["POST"])
