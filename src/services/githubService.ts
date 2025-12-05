@@ -4,7 +4,7 @@ import { RemoteBrain, BrainNodeConfig } from '../types';
 // Configuration matching the "Integrative Healer" architecture request
 const DEFAULT_CONFIG: BrainNodeConfig = {
     repoOwner: 'SoulRenderArji',
-    repoName: 'Mommy-Integrative-Healer',
+    repoName: 'Mommy-AI',
     branch: 'main'
 };
 
