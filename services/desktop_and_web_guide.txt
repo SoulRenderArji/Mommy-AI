@@ -1,0 +1,46 @@
+This document outlines how to use the Mommy AI desktop and web interface.
+
+--- DESKTOP ICONS ---
+
+1.  **Mommy-AI.desktop (Launcher)**
+    -   WHAT: Launches the entire Mommy AI system.
+    -   HOW: Double-click this icon.
+    -   DOES: Starts the Ollama service, installs dependencies, and starts the main Flask server.
+    -   RESULT: A terminal window opens to show progress. When it's ready, the web browser will open to http://localhost:5000.
+
+2.  **Mommy-AI-Chat.html (Web UI)**
+    -   WHAT: A direct link to the web chat interface.
+    -   HOW: Double-click to open in the default browser.
+    -   WHEN: Use this if the server is already running or if the browser doesn't open automatically.
+
+--- TYPICAL WORKFLOW ---
+
+1.  Double-click the "Mommy-AI.desktop" icon.
+2.  A terminal will open and show the startup progress.
+3.  Wait for the message "Running on http://0.0.0.0:5000".
+4.  The web browser should open automatically. If not, manually go to http://localhost:5000.
+5.  In the web UI, click the dropdown menu to select your user profile ("Hailey" or "Brandon").
+6.  Type a message and press Enter to chat.
+
+--- NETWORK ACCESS (FROM ANOTHER DEVICE) ---
+
+To chat from another device (like a phone or tablet) on the same Wi-Fi network:
+
+1.  Find the server computer's local IP address by opening a terminal and running: `hostname -I`
+2.  The output will be an IP address (e.g., 192.168.8.211).
+3.  On the other device's web browser, go to `http://<YOUR_IP>:5000` (e.g., http://192.168.8.211:5000).
+4.  Select your user and start chatting.
+
+--- IMPORTANT FILES FOR CUSTOMIZATION ---
+
+The project is located at: /home/hailey/Documents/GitHub/Mommy-AI/
+
+-   **start_mommy_ai.sh**: The main startup script.
+-   **setup_mommy_ai.sh**: The first-time setup wizard.
+-   **.env**: For configuring API keys and enabling/disabling features like Ollama and NSFW content.
+-   **services/user_profiles.json**: To edit user details like display names and pronouns.
+-   **mommy_ai.py**: The core server code.
+
+--- DOCUMENTATION ---
+
+For more detailed information, you can read the markdown files in the project directory: QUICK_START.md, SYSTEM_OVERVIEW.md, and STARTUP_GUIDE.md.

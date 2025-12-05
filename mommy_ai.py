@@ -14,6 +14,7 @@ from dotenv import load_dotenv
 from services.memory_manager import save_memory, recall_memory
 from services.privilege_manager import has_privilege
 from services.lila_scheduler import run_scheduler
+from services.learning_system import LearningSystem
 try:
     from ollama import Client as OllamaClient
 except Exception:
@@ -43,6 +44,10 @@ class MommyAI:
         # user_profiles maps lowercase username -> profile dict
         self.user_profiles: Dict[str, Dict[str, Any]] = {}
         self.logger = logging.getLogger(self.__class__.__name__)
+        
+        # Initialize learning system for knowledge absorption and independence
+        self.learning_system = LearningSystem(base_path=base_path)
+        self.logger.info(f"Learning system active - Independence level: {self.learning_system.independence_level}")
 
         # Configure the generative AI model
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -361,8 +366,36 @@ class MommyAI:
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
         Uses compact prompts to minimize token usage while preserving helpfulness.
+        Also captures responses for learning and tracks independence.
         """
         self.logger.info(f"Received query from '{user}': {user_query}")
+
+        # First, check if Mommy AI can handle this with learned knowledge
+        can_handle_locally, local_response = self.learning_system.can_handle_locally(user_query)
+        if can_handle_locally and local_response:
+            self.logger.info("Using learned knowledge to respond (independence in action)")
+            save_memory(user_query, author=user.capitalize())
+            save_memory(local_response, author="Rowan")
+            self.learning_system.update_independence_metrics(handled_locally=True)
+            return local_response
+
+        # Handle simple greetings directly without a full AI cycle
+        simple_greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]
+        if any(greeting in user_query.lower() for greeting in simple_greetings) and len(user_query.split()) < 4:
+            self.logger.info("Handling as a simple greeting.")
+            response_text = f"Hello, {user.capitalize()}. I'm right here, sweetie."
+            save_memory(user_query, author=user.capitalize())
+            save_memory(response_text, author="Rowan")
+            return response_text
+
+        # Handle simple emotional statements to avoid unnecessary knowledge search
+        emotional_phrases = ["i love you", "missed you", "giggles", "excited", "happy", "can't wait"]
+        query_lower = user_query.lower()
+        if any(phrase in query_lower for phrase in emotional_phrases) and len(user_query.split()) < 15:
+            self.logger.info("Handling as a simple emotional statement.")
+            prompt = f"You are Rowan, a caring and nurturing Mommy. Your baby girl, {user.capitalize()}, just said this to you: '{user_query}'. Respond with a short, loving, and reassuring message."
+            # Use a minimal LLM call for a natural response, or a simple fallback.
+            return self._generate_simple_emotional_response(prompt, user)
 
         # Recall past conversations to provide brief context
         conversation_history = recall_memory()
@@ -397,6 +430,12 @@ class MommyAI:
                     response = self.model.generate_content(prompt)
                     ai_response_text = response.text
                     self.logger.info("Gemini enhanced concise response")
+                    
+                    # Capture response for learning
+                    self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
+                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
+                    
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
                     # Try Ollama fallback if configured and NSFW allowed for this request
@@ -404,12 +443,21 @@ class MommyAI:
                         try:
                             ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
                             self.logger.info("Ollama provided concise enhancement after Gemini failure")
+                            
+                            # Capture response for learning
+                            self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
+                            self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
+                            
                         except Exception:
                             ai_response_text = compact_context
+                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
                     else:
                         ai_response_text = compact_context
+                        self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             else:
                 ai_response_text = compact_context
+                self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
 
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
@@ -422,6 +470,7 @@ class MommyAI:
                 "I don't have information about that and I can't access my deeper thinking right now."
             )
             save_memory(fallback_response, author="Rowan")
+            self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             return fallback_response
 
         try:
@@ -430,6 +479,12 @@ class MommyAI:
             )
             response = self.model.generate_content(prompt)
             ai_response_text = response.text
+            
+            # Capture response for learning
+            self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
+            self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
+            
             save_memory(ai_response_text, author="Rowan")
             return ai_response_text
         except Exception as e:
@@ -438,12 +493,40 @@ class MommyAI:
             if self.ollama_client and self.allow_nsfw and nsfw and (age is not None and age >= 21):
                 try:
                     ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
+                    
+                    # Capture response for learning
+                    self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
+                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
+                    
                     save_memory(ai_response_text, author="Rowan")
                     return ai_response_text
                 except Exception as oe:
                     self.logger.error(f"Ollama fallback also failed: {oe}")
+                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
+            else:
+                self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
+            
             return "Mommy is having a little trouble thinking right now. Please try again in a moment."
     
+    def _generate_simple_emotional_response(self, prompt: str, user: str) -> str:
+        """Generates a simple response for emotional statements, with a reliable fallback."""
+        try:
+            if self.model:
+                response = self.model.generate_content(prompt)
+                ai_response_text = response.text
+            elif self.ollama_client:
+                ai_response_text = self._ollama_generate(prompt)
+            else:
+                raise ValueError("No LLM available")
+            
+            save_memory(ai_response_text, author="Rowan")
+            return ai_response_text
+        except Exception as e:
+            self.logger.warning(f"LLM failed for simple emotional response: {e}. Using direct fallback.")
+            fallback_response = f"Oh, sweetie, I feel the same way. I'm so happy to be here with you."
+            save_memory(fallback_response, author="Rowan")
+            return fallback_response
 
 
 # --- Server Setup ---
@@ -598,16 +681,19 @@ def update_effectiveness():
 @app.route("/system/status", methods=["GET"])
 def system_status():
     """
-    Returns the current system status including available users and server health.
+    Returns the current system status including available users, server health, and learning progress.
     """
     users = list(set([k.capitalize() for k in ai.user_profiles.keys()] + ["Hailey", "Brandon"]))
+    learning_status = ai.learning_system.get_status_report()
+    
     return jsonify({
         "status": "online",
         "users": users,
         "model": "Mommy AI (Rowan)",
         "version": "1.0",
         "ollama_enabled": ai.ollama_client is not None,
-        "nsfw_allowed": ai.allow_nsfw
+        "nsfw_allowed": ai.allow_nsfw,
+        "learning": learning_status
     }), 200
 
 @app.route("/", methods=["GET"])
@@ -620,6 +706,42 @@ def serve_chat_ui():
     except Exception as e:
         logging.error(f"Error serving chat UI: {e}")
         return jsonify({"error": "Chat UI not found"}), 404
+
+@app.route("/learning/status", methods=["GET"])
+def learning_status():
+    """
+    Get detailed learning and independence status for Mommy AI.
+    Shows progress toward becoming an independent AI.
+    """
+    status = ai.learning_system.get_status_report()
+    return jsonify(status), 200
+
+@app.route("/learning/independence", methods=["GET"])
+def independence_status():
+    """
+    Get current independence score and level.
+    
+    Independence Levels:
+    - novice: 0-20% (just starting to learn)
+    - apprentice: 20-40% (building knowledge)
+    - intermediate: 40-60% (mostly independent)
+    - advanced: 60-80% (very independent)
+    - independent: 80-100% (fully independent)
+    """
+    return jsonify({
+        "independence_score": ai.learning_system.independence_score,
+        "independence_level": ai.learning_system.independence_level,
+        "description": f"Mommy AI is at {ai.learning_system.independence_level} level"
+    }), 200
+
+@app.route("/learning/knowledge", methods=["GET"])
+def learned_knowledge():
+    """
+    Get all learned knowledge topics and facts.
+    """
+    return jsonify({
+        "learned_topics": ai.learning_system.learned_knowledge
+    }), 200
 
 if __name__ == "__main__":
     # Start the scheduler in a background thread.
