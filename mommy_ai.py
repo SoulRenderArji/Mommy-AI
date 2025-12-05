@@ -16,6 +16,8 @@ from services.privilege_manager import has_privilege
 from services.lila_scheduler import run_scheduler
 from services.learning_system import LearningSystem
 from services.language_understanding import LanguageUnderstanding
+from services.cognitive_engine import CognitiveEngine
+from dataclasses import asdict
 try:
     from ollama import Client as OllamaClient
 except Exception:
@@ -56,6 +58,10 @@ class MommyAI:
         # Initialize language understanding system for NLP and intent recognition
         self.language_understanding = LanguageUnderstanding(base_path=base_path)
         self.logger.info("Language understanding system initialized")
+
+        # Initialize cognitive engine (decision maker / thought process simulator)
+        self.cognitive_engine = CognitiveEngine(language_understanding=self.language_understanding, learning_system=self.learning_system)
+        self.logger.info("Cognitive engine initialized")
 
         # Configure the generative AI model
         env_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".env")
@@ -378,7 +384,7 @@ class MommyAI:
             self.logger.error(f"Ollama generate error: {e}")
             raise
 
-    def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None) -> str:
+    def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None, explain: bool = False):
         """
         Processes a user query using the knowledge base first, then Gemini only if needed.
         Uses compact prompts to minimize token usage while preserving helpfulness.
@@ -391,14 +397,7 @@ class MommyAI:
         response_style = self.language_understanding.suggest_response_style(query_analysis)
         self.logger.debug(f"Query Intent: {query_analysis['intent']['name']} | Sentiment: {query_analysis['sentiment']['sentiment']} | Style: {response_style}")
 
-        # First, check if Mommy AI can handle this with learned knowledge
-        can_handle_locally, local_response = self.learning_system.can_handle_locally(user_query)
-        if can_handle_locally and local_response:
-            self.logger.info("Using learned knowledge to respond (independence in action)")
-            save_memory(user_query, author=user.capitalize())
-            save_memory(local_response, author="Rowan")
-            self.learning_system.update_independence_metrics(handled_locally=True)
-            return local_response
+        # (Local handling decision will be made by the cognitive engine later)
 
         # Handle simple greetings directly without a full AI cycle
         simple_greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]
@@ -450,6 +449,29 @@ class MommyAI:
 
         compact_context = self._compact_knowledge_context(user_query, max_chars=1200)
 
+        # Run the cognitive engine to decide strategy (local / hybrid / llm / creative)
+        try:
+            trace = self.cognitive_engine.decide(user_query, user, profile)
+            selected_type = trace.selected_option.get("type") if hasattr(trace, 'selected_option') else None
+            self.logger.info(f"Cognitive decision: {selected_type} (confidence: {trace.confidence:.2f})")
+        except Exception as e:
+            self.logger.warning(f"Cognitive engine failed: {e}. Falling back to default strategy.")
+            trace = None
+            selected_type = None
+
+        # If cognitive engine selected local and we have a local response, return it immediately
+        if selected_type == "local" and trace and trace.perception.get("local_response"):
+            local_response = trace.perception.get("local_response")
+            self.logger.info("Using learned knowledge as selected by cognitive engine")
+            save_memory(user_query, author=user.capitalize())
+            save_memory(local_response, author="Rowan")
+            self.learning_system.update_independence_metrics(handled_locally=True)
+            if explain:
+                return {"response": local_response, "cognitive_trace": asdict(trace)}
+            return local_response
+
+        creative_mode = selected_type == "creative"
+
         # If we have relevant info, prefer a short, contextual answer
         if has_relevant_info:
             self.logger.info("Using local knowledge to respond (compact mode)")
@@ -460,7 +482,7 @@ class MommyAI:
 
             if use_gemini:
                 prompt = (
-                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
+                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone and respond concisely (one short paragraph)."
                 )
                 try:
                     response = self.model.generate_content(prompt)
@@ -493,7 +515,7 @@ class MommyAI:
                         self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             elif use_ollama:
                 prompt = (
-                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nRespond concisely (one short paragraph)."
+                    f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone and respond concisely (one short paragraph)."
                 )
                 try:
                     ai_response_text = self._ollama_generate(prompt, system=self.SHORT_SYSTEM_PROMPT)
@@ -525,7 +547,7 @@ class MommyAI:
             return fallback_response
 
         prompt = (
-            f"{self.SHORT_SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nIf you need to ask for clarification, do so briefly, then answer concisely."
+            f"{self.SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT INDEX ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone. If you need to ask for clarification, do so briefly, then answer."
         )
 
         try:
@@ -607,8 +629,23 @@ def ask_mommy():
     profile = ai.get_or_create_temp_profile(user)
     age = profile.get("age")
 
-    response = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age)
-    return jsonify({"response": response})
+    explain = bool(data.get("explain", False))
+    result = ai.get_response(user_query, user=user, nsfw=nsfw_flag, age=age, explain=explain)
+
+    # If get_response returned a dict (already included trace), pass it through
+    if isinstance(result, dict):
+        return jsonify(result)
+
+    # Otherwise, package the response. If explanation requested, attach cognitive trace.
+    if explain:
+        try:
+            trace = ai.cognitive_engine.decide(user_query, user, ai.get_or_create_temp_profile(user))
+            return jsonify({"response": result, "cognitive_trace": asdict(trace)})
+        except Exception:
+            # If trace generation fails, still return the response
+            return jsonify({"response": result})
+
+    return jsonify({"response": result})
 
 
 @app.route("/user/profile", methods=["POST"])

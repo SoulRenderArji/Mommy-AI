@@ -10,6 +10,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from dataclasses import dataclass, asdict
 import sqlite3
 from datetime import datetime
+import os
 
 
 @dataclass
@@ -34,6 +35,7 @@ class LanguageUnderstanding:
         self.intent_patterns = self._initialize_intent_patterns()
         self.entity_extractors = self._initialize_entity_extractors()
         self.sentiment_words = self._initialize_sentiment_words()
+        self.known_names = self._load_known_names()
         self.processed_queries = {}
         
         # Statistics tracking
@@ -110,6 +112,18 @@ class LanguageUnderstanding:
                 "low": ["meh", "eh", "not great", "lacking", "wanting"],
             },
         }
+
+    def _load_known_names(self) -> List[str]:
+        """Loads known user display names from user_profiles.json."""
+        profiles_path = os.path.join(self.base_path, "user_profiles.json")
+        if not os.path.exists(profiles_path):
+            return []
+        try:
+            with open(profiles_path, 'r', encoding='utf-8') as f:
+                profiles = json.load(f)
+            return [profile.get("display_name", name).lower() for name, profile in profiles.items()]
+        except Exception:
+            return []
 
     def preprocess_query(self, query: str) -> str:
         """
@@ -215,18 +229,13 @@ class LanguageUnderstanding:
         return None
 
     def _extract_person_name(self, query: str) -> Optional[Dict]:
-        """Extract person names (simple approach - capitalized words)"""
-        # Look for capitalized words that aren't at sentence start
-        tokens = query.split()
+        """Extracts known person names from the query."""
+        query_lower = query.lower()
         names = []
-        
-        for i, token in enumerate(tokens):
-            # Check if word is capitalized and not at start or common words
-            if token and token[0].isupper() and i > 0 and token not in ['I', 'The', 'My']:
-                # Remove punctuation
-                clean_token = re.sub(r'[^\w]', '', token)
-                if len(clean_token) > 1:
-                    names.append(clean_token)
+        for name in self.known_names:
+            # Use word boundaries to avoid matching substrings (e.g., 'hailey' in 'hailey's')
+            if re.search(r'\b' + re.escape(name) + r'\b', query_lower):
+                names.append(name.capitalize())
         
         if names:
             return {"type": "person_name", "values": names}
