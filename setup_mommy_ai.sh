@@ -4,7 +4,7 @@
 
 set -e
 
-PROJECT_ROOT="/home/hailey/Documents/GitHub/Mommy-AI"
+PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_PATH="$PROJECT_ROOT/.venv"
 
 GREEN='\033[0;32m'
@@ -49,7 +49,7 @@ GEMINI_API_KEY=your_api_key_here
 
 # Ollama Configuration (optional)
 OLLAMA_ENABLED=true
-OLLAMA_MODEL=dolphin-nsfw
+OLLAMA_MODEL=dolphin-llama3:70b
 OLLAMA_HOST=127.0.0.1:11434
 
 # NSFW Model Gating (set to true only if desired)
@@ -89,17 +89,36 @@ echo -e "${GREEN}✓ User profiles created${NC}"
 # Step 6: Desktop shortcuts
 echo ""
 echo -e "${YELLOW}Setting up desktop shortcuts...${NC}"
+DESKTOP_DIR=$(xdg-user-dir DESKTOP 2>/dev/null || echo "$HOME/Desktop")
 
-# Copy web UI to Desktop
-cp "$PROJECT_ROOT/mommy_ai_chat.html" ~/Desktop/Mommy-AI-Chat.html
-echo -e "${GREEN}✓ Chat UI shortcut created on Desktop${NC}"
+if [ ! -d "$DESKTOP_DIR" ]; then
+    echo -e "${RED}⚠ Could not find Desktop directory. Skipping shortcut creation.${NC}"
+else
+    # Create a symbolic link to the chat UI for easy access
+    ln -sf "$PROJECT_ROOT/mommy_ai_chat.html" "$DESKTOP_DIR/Mommy-AI-Chat.html"
+    echo -e "${GREEN}✓ Chat UI shortcut created on Desktop${NC}"
 
-# Copy startup launcher to Desktop
-if [ -f "$PROJECT_ROOT/Mommy-AI.desktop" ]; then
-    cp "$PROJECT_ROOT/Mommy-AI.desktop" ~/Desktop/
-    chmod +x ~/Desktop/Mommy-AI.desktop
-    echo -e "${GREEN}✓ Startup launcher copied to Desktop${NC}"
+    # Dynamically create the .desktop file to ensure paths are correct
+    LAUNCHER_PATH="$DESKTOP_DIR/Mommy-AI.desktop"
+    echo -e "${YELLOW}Creating application launcher...${NC}"
+    cat > "$LAUNCHER_PATH" << EOF
+[Desktop Entry]
+Version=1.0
+Name=Mommy AI
+Comment=Start the Mommy AI Server
+Exec=gnome-terminal -- bash -c "'$PROJECT_ROOT/start_mommy_ai.sh'; exec bash"
+Icon=system-run
+Terminal=false
+Type=Application
+Categories=Utility;
+EOF
+
+    # Make the launcher executable
+    chmod +x "$LAUNCHER_PATH"
+    echo -e "${GREEN}✓ Startup launcher created on Desktop${NC}"
+    echo -e "${BLUE}Note: You may need to right-click the 'Mommy AI' icon and 'Allow Launching' the first time.${NC}"
 fi
+
 
 # Step 7: Summary
 echo ""

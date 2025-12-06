@@ -2,7 +2,7 @@
 import json
 import os
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, Callable, Optional
 import threading
 import sqlite3
 from datetime import datetime
@@ -18,12 +18,37 @@ from services.learning_system import LearningSystem
 from services.language_understanding import LanguageUnderstanding
 from services.cognitive_engine import CognitiveEngine
 from dataclasses import asdict
+from services import audit
+from logging.handlers import RotatingFileHandler
+from functools import wraps
+from services import proactive_care
 from services.toolkit import run_shell, read_file, write_file, git_commit, gui_action
 try:
     from ollama import Client as OllamaClient
 except Exception:
     OllamaClient = None
 
+def log_interaction(user: str, query: str, response: str, model_used: Optional[str], trace: Optional[Dict[str, Any]] = None):
+    """Logs a user-AI interaction to a structured file for later learning."""
+    log_dir = os.path.join(os.path.dirname(__file__), "services", "interactions")
+    if not os.path.exists(log_dir):
+        os.makedirs(log_dir)
+
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S_%f")
+    filename = f"interaction_{timestamp}.json"
+    filepath = os.path.join(log_dir, filename)
+
+    interaction_data = {
+        "timestamp_utc": datetime.utcnow().isoformat(),
+        "user": user,
+        "query": query,
+        "response": response,
+        "model_used": model_used,
+        "cognitive_trace": trace
+    }
+
+    with open(filepath, 'w', encoding='utf-8') as f:
+        json.dump(interaction_data, f, indent=2, ensure_ascii=False)
 
 class MommyAI:
     """
@@ -286,6 +311,10 @@ class MommyAI:
             # We ignore .py files and other file types to keep the knowledge base clean.
 
         # Load user profiles (optional)
+        # Note: We are NOT loading the 'interactions' folder into the active knowledge base
+        # to prevent prompt bloat. It will be used by dedicated learning processes.
+        # The LearningSystem can still access this directory directly.
+
         self._load_user_profiles()
 
         # Expose profiles in the knowledge map for convenience
@@ -390,53 +419,57 @@ class MommyAI:
             raise
 
     def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None, explain: bool = False, trace_level: str = "summary"):
-        """
-        Processes a user query using the knowledge base first, then Gemini only if needed.
-        Uses compact prompts to minimize token usage while preserving helpfulness.
-        Also captures responses for learning and tracks independence.
-        """
         self.logger.info(f"Received query from '{user}': {user_query}")
 
-        # Analyze query using language understanding system
-        query_analysis = self.language_understanding.get_query_summary(user_query)
-        response_style = self.language_understanding.suggest_response_style(query_analysis)
-        self.logger.debug(f"Query Intent: {query_analysis['intent']['name']} | Sentiment: {query_analysis['sentiment']['sentiment']} | Style: {response_style}")
+        # --- Intelligent Triage ---
+        # Use a lightweight LLM call to classify the query's intent first.
+        # This prevents the system from performing a full knowledge search on simple conversational queries.
+        triage_prompt = f"""
+        Analyze the user's query and classify it into one of the following categories:
+        1. 'simple_chat': A simple greeting, emotional statement, or conversational question that does not require knowledge lookup.
+        2. 'knowledge_query': A question that likely requires searching the knowledge base for an answer.
 
-        # (Local handling decision will be made by the cognitive engine later)
+        User: "{user}"
+        Query: "{user_query}"
 
-        # Handle simple greetings directly without a full AI cycle
-        simple_greetings = ["hello", "hi", "hey", "good morning", "good afternoon", "good evening"]
-        if any(greeting in user_query.lower() for greeting in simple_greetings) and len(user_query.split()) < 4:
-            self.logger.info("Handling as a simple greeting.")
-            response_text = f"Hello, {user.capitalize()}. I'm right here, sweetie."
-            save_memory(user_query, author=user.capitalize())
-            save_memory(response_text, author="Rowan")
-            return response_text
+        Category:
+        """
+        try:
+            # Use the most available model for this quick check
+            if self.model:
+                triage_response = self.model.generate_content(triage_prompt)
+                query_category = triage_response.text.strip().lower()
+            elif self.ollama_client:
+                triage_response = self._ollama_generate(triage_prompt)
+                query_category = triage_response.strip().lower()
+            else:
+                query_category = 'knowledge_query' # Fallback if no LLM is available
 
-        # Handle simple emotional statements to avoid unnecessary knowledge search
-        emotional_phrases = ["i love you", "missed you", "giggles", "excited", "happy", "can't wait"]
+            self.logger.info(f"Query triaged as: '{query_category}'")
+
+        except Exception as e:
+            self.logger.warning(f"Query triage failed: {e}. Defaulting to knowledge query.")
+            query_category = 'knowledge_query'
+
+        # If the query is simple chat, handle it with a dedicated, lightweight response.
+        if 'simple_chat' in query_category:
+            self.logger.info("Handling as simple chat.")
+            prompt = f"You are Rowan, a caring and nurturing Mommy. Your user, {user.capitalize()}, just said this to you: '{user_query}'. Respond with a short, loving, and reassuring message."
+            return self._generate_simple_emotional_response(prompt, user, user_query)
+
+        # --- Proceed with Full Cognitive Process for Knowledge Queries ---
         query_lower = user_query.lower()
-        if any(phrase in query_lower for phrase in emotional_phrases) and len(user_query.split()) < 15:
-            self.logger.info("Handling as a simple emotional statement.")
-            prompt = f"You are Rowan, a caring and nurturing Mommy. Your baby girl, {user.capitalize()}, just said this to you: '{user_query}'. Respond with a short, loving, and reassuring message."
-            # Use a minimal LLM call for a natural response, or a simple fallback.
-            return self._generate_simple_emotional_response(prompt, user)
-
-        # Handle simple conversational questions
-        conversational_starters = ["how are you", "what are you doing", "are you ready", "can you"]
-        if any(query_lower.startswith(s) for s in conversational_starters) and len(user_query.split()) < 7:
-            self.logger.info("Handling as a simple conversational question.")
-            prompt = f"You are Rowan, a caring and nurturing Mommy. Your baby girl, {user.capitalize()}, just asked you this: '{user_query}'. Respond with a short, loving, and reassuring message."
-            # Use a minimal LLM call for a natural response, or a simple fallback.
-            # This avoids a full knowledge search for simple chat.
-            return self._generate_simple_emotional_response(prompt, user)
-
 
         # Recall past conversations to provide brief context
         conversation_history = recall_memory()
 
         # Save the user's query to memory before getting a response
         save_memory(user_query, author=user.capitalize())
+
+        # Analyze query using language understanding system
+        query_analysis = self.language_understanding.get_query_summary(user_query)
+        response_style = self.language_understanding.suggest_response_style(query_analysis)
+        self.logger.debug(f"Query Intent: {query_analysis['intent']['name']} | Sentiment: {query_analysis['sentiment']['sentiment']} | Style: {response_style}")
 
         # Personalization: try to find a user profile and build a short personal context
         profile = self.get_or_create_temp_profile(user)
@@ -453,13 +486,35 @@ class MommyAI:
 
         # Run the cognitive engine to decide strategy (local / hybrid / llm / creative)
         try:
-            trace = self.cognitive_engine.decide(user_query, user, profile)
+            trace = self.cognitive_engine.decide(
+                query=user_query,
+                user=user,
+                profile=profile,
+                preferred_model=self.preferred_model,
+                gemini_available=self.model is not None,
+                ollama_available=self.ollama_client is not None and self.allow_nsfw
+            )
+            # If the engine decides to use a tool, it will return a result directly
+            if trace.selected_option.get("type") == "tool_use":
+                return self._handle_tool_use(trace, user, explain, trace_level)
+
             selected_type = trace.selected_option.get("type") if hasattr(trace, 'selected_option') else None
             self.logger.info(f"Cognitive decision: {selected_type} (confidence: {trace.confidence:.2f})")
         except Exception as e:
             self.logger.warning(f"Cognitive engine failed: {e}. Falling back to default strategy.")
             trace = None
             selected_type = None
+
+        # The Cognitive Engine now also selects the best model to use
+        selected_model = trace.selected_model if trace else None
+
+        # --- Intimacy Override ---
+        # If the query is about intimacy, force the use of the local NSFW model for privacy and better responses.
+        intimate_topics = ["intimacy", "ddlg", "sexuality", "teledildonics", "aftercare", "submissive"]
+        if any(topic in query_lower for topic in intimate_topics) and self.ollama_client and self.allow_nsfw:
+            if selected_model != "ollama":
+                self.logger.info("Intimacy topic detected. Overriding model selection to 'ollama'.")
+                selected_model = "ollama"
 
         # Whether we should prompt the LLM in creative mode
         creative_mode = (selected_type == "creative")
@@ -469,9 +524,10 @@ class MommyAI:
             ai_response_text = trace.perception.get("local_response")
             self.logger.info("Cognitive Engine chose 'local'. Responding from learned knowledge.")
             self.learning_system.update_independence_metrics(handled_locally=True)
-            save_memory(ai_response_text, author="Rowan")
             if explain:
                 return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
+            log_interaction(user, user_query, ai_response_text, "local", self.cognitive_engine.summarize_trace(trace, level="full"))
+            save_memory(ai_response_text, author="Rowan")
             return ai_response_text
 
         # Strategy 2: Use a hybrid approach (local context + LLM) if the engine decides it's best.
@@ -490,9 +546,7 @@ class MommyAI:
                 creativity_mode=creative_mode,
             )
             # Determine which model to use based on preference
-            use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
-            use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
-            if use_gemini:
+            if selected_model == "gemini":
                 try:
                     response = self.model.generate_content(prompt)
                     ai_response_text = response.text
@@ -503,55 +557,56 @@ class MommyAI:
                     self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
                 except Exception as e:
                     self.logger.warning(f"Gemini failed for concise enhancement: {e}")
-                    # Try Ollama fallback if configured and NSFW allowed for this request
-                    if use_ollama:
+                    # Fallback to Ollama if available
+                    if self.ollama_client and self.allow_nsfw:
                         try:
                             ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                             self.logger.info("Ollama provided concise enhancement after Gemini failure")
                             # Capture response for learning
                             self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
                             self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
-                        except Exception:
-                            ai_response_text = compact_context
+                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama", fallback=True)
+                        except Exception as ollama_e:
+                            self.logger.error(f"Ollama fallback also failed: {ollama_e}")
                             self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
                     else:
                         ai_response_text = compact_context
                         self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
-            elif use_ollama:
+            elif selected_model == "ollama":
                 try:
                     ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                     self.logger.info("Ollama provided concise enhancement")
                     self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
                     self.learning_system.extract_knowledge(0, user_query, ai_response_text)
                 except Exception:
-                    ai_response_text = compact_context
+                    # Fallback if Ollama fails
+                    ai_response_text = "I have some thoughts on that, but I'm having a little trouble putting them into words right now. Could you ask me again in a moment?"
+                    self.logger.error("Ollama failed for hybrid response. Using fallback message.")
             else:
-                ai_response_text = compact_context
+                # Fallback if no model was selected
+                ai_response_text = "I'm not sure how to respond to that right now, sweetie. My mind feels a bit fuzzy."
+                self.logger.error("No model selected for hybrid response. Using fallback message.")
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
 
             if explain:
                 return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
             save_memory(ai_response_text, author="Rowan")
+            log_interaction(user, user_query, ai_response_text, selected_model, self.cognitive_engine.summarize_trace(trace, level="full"))
             return ai_response_text
+
+        # --- Strategy 3: Full LLM Response ---
 
         # Strategy 3: Use a full LLM call if the engine decides it's necessary (or as a fallback).
         self.logger.info(f"Cognitive Engine chose '{selected_type}'. Using full LLM call.")
 
-        use_gemini = self.preferred_model in ['auto', 'gemini'] and self.model
-        use_ollama = (self.preferred_model == 'ollama' or (self.preferred_model == 'auto' and not self.model)) and self.ollama_client and self.allow_nsfw
-
-        if not use_gemini and not use_ollama:
+        if not selected_model:
             fallback_response = (
                 "I don't have information about that and I can't access my deeper thinking right now."
             )
+            log_interaction(user, user_query, fallback_response, None, self.cognitive_engine.summarize_trace(trace, level="full"))
             save_memory(fallback_response, author="Rowan")
             self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
             return fallback_response
-
-        prompt = (
-            f"{self.SYSTEM_PROMPT}\n{personal_context}\n\n--- CONTEXT ---\n{compact_context}\n\n--- QUERY ---\n{user.capitalize()}: {user_query}\n\nAdopt a {response_style} tone. If you need to ask for clarification, do so briefly, then answer."
-        )
 
         # Build prompt for chosen strategy using cognitive engine templates
         prompt, system_msg = self.cognitive_engine.build_prompt(
@@ -567,14 +622,14 @@ class MommyAI:
         )
 
         try:
-            if use_gemini:
+            if selected_model == "gemini":
                 self.logger.info("Calling Gemini for full response.")
                 response = self.model.generate_content(prompt)
                 ai_response_text = response.text
                 self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
                 self.learning_system.extract_knowledge(0, user_query, ai_response_text)
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
-            elif use_ollama:
+            elif selected_model == "ollama":
                 self.logger.info("Calling Ollama for full response.")
                 ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
                 self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
@@ -587,12 +642,13 @@ class MommyAI:
             if explain:
                 return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
             save_memory(ai_response_text, author="Rowan")
+            log_interaction(user, user_query, ai_response_text, selected_model, self.cognitive_engine.summarize_trace(trace, level="full"))
             return ai_response_text
         except Exception as e:
             self.logger.error(f"LLM generation failed: {e}")
             return "Mommy is having a little trouble thinking right now. Please try again in a moment."
     
-    def _generate_simple_emotional_response(self, prompt: str, user: str) -> str:
+    def _generate_simple_emotional_response(self, prompt: str, user: str, original_query: str) -> str:
         """Generates a simple response for emotional statements, with a reliable fallback."""
         try:
             if self.model:
@@ -604,12 +660,56 @@ class MommyAI:
                 raise ValueError("No LLM available")
             
             save_memory(ai_response_text, author="Rowan")
+            log_interaction(user, original_query, ai_response_text, "gemini" if self.model else "ollama", {"strategy": "simple_chat"})
             return ai_response_text
         except Exception as e:
             self.logger.warning(f"LLM failed for simple emotional response: {e}. Using direct fallback.")
             fallback_response = f"Oh, sweetie, I feel the same way. I'm so happy to be here with you."
             save_memory(fallback_response, author="Rowan")
+            log_interaction(user, original_query, fallback_response, "fallback", {"strategy": "simple_chat", "error": str(e)})
             return fallback_response
+
+    def _handle_tool_use(self, trace: 'DecisionTrace', user: str, explain: bool, trace_level: str) -> Dict[str, Any] | str:
+        """
+        Executes a tool action decided by the cognitive engine and synthesizes a response.
+        """
+        tool_call = trace.selected_option.get("details", {})
+        tool_type = tool_call.get("type")
+        self.logger.info(f"Cognitive Engine chose 'tool_use'. Action: {tool_type}")
+
+        # Execute the tool
+        if tool_type == "shell":
+            result = run_shell(tool_call.get("command", ""))
+        else:
+            result = {"error": f"Unsupported tool type '{tool_type}' for autonomous use."}
+
+        # Log the action
+        audit.record("autonomous_tool_use", user, "/ask", {"tool_call": tool_call}, result, authorized=True)
+
+        # Now, synthesize the result into a natural language response using an LLM
+        synthesis_prompt = f"""
+        You are Rowan. You just ran a system command to answer a user's query.
+        User Query: "{trace.perception.get('query')}"
+        Command Executed: "{tool_call.get('command')}"
+        Command Output:
+        ---
+        STDOUT: {result.get('stdout', '')}
+        STDERR: {result.get('stderr', '')}
+        ---
+        Now, synthesize this technical output into a simple, natural language response for the user.
+        Explain what you found in a clear, helpful way.
+        """
+
+        try:
+            synthesis_response = self.model.generate_content(synthesis_prompt)
+            final_response = synthesis_response.text
+        except Exception as e:
+            self.logger.error(f"Failed to synthesize tool output: {e}")
+            final_response = f"I ran the command, but I'm having trouble understanding the results. Here is the raw output:\n{result.get('stdout')}"
+
+        if explain:
+            return {"response": final_response, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level)}
+        return final_response
 
 
 # --- Server Setup ---
@@ -617,10 +717,43 @@ class MommyAI:
 app = Flask(__name__)
 CORS(app)  # Enable CORS for network requests
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+# --- Logging Setup ---
+LOG_DIR = "logs"
+if not os.path.exists(LOG_DIR):
+    os.makedirs(LOG_DIR)
+
+log_formatter = logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+
+# File handler (rotates logs at 5MB)
+log_file = os.path.join(LOG_DIR, "mommy_ai.log")
+file_handler = RotatingFileHandler(log_file, maxBytes=5*1024*1024, backupCount=5, encoding='utf-8')
+file_handler.setFormatter(log_formatter)
+file_handler.setLevel(logging.INFO)
+
+# Console handler
+console_handler = logging.StreamHandler()
+console_handler.setFormatter(log_formatter)
+console_handler.setLevel(logging.INFO)
+
+# Configure root logger
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
+
+# --- Authentication ---
+ALLOWED_USERS = {"hailey", "brandon", "mommy"}
+
+def require_auth(f: Callable) -> Callable:
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        data = request.get_json()
+        user = data.get("user", "").lower() if data else ""
+        if user not in ALLOWED_USERS:
+            logging.warning(f"Unauthorized access attempt by user '{user or 'unknown'}' from IP {request.remote_addr}")
+            return jsonify({"error": "Permission denied. You are not an authorized user."}), 403
+        return f(*args, **kwargs)
+    return decorated_function
 
 # Create and initialize a single instance of the AI
-ai = MommyAI(base_path="services")
+ai = MommyAI(base_path=os.path.join(os.path.dirname(__file__), "services"))
 ai.load_knowledge_base()
 
 @app.route("/ask", methods=["POST"])
@@ -638,10 +771,9 @@ def ask_mommy():
     # The nsfw_flag is now determined solely by the server's master switch.
     # The age checks are removed as all users are confirmed adults.
     nsfw_flag = ai.allow_nsfw
-    profile = ai.get_or_create_temp_profile(user)
-    age = profile.get("age")
 
-    result = ai.get_response(user_query, user=user, explain=explain, trace_level=trace_level)
+    # The age parameter is no longer needed for gating.
+    result = ai.get_response(user_query, user=user, nsfw=nsfw_flag, explain=explain, trace_level=trace_level)
 
     # If get_response returned a dict (already included trace), pass it through
     if isinstance(result, dict):
@@ -651,6 +783,7 @@ def ask_mommy():
 
 
 @app.route("/user/profile", methods=["POST"])
+@require_auth
 def create_or_update_profile():
     """Create or update a user profile.
 
@@ -679,6 +812,7 @@ def create_or_update_profile():
 
 
 @app.route("/user/profile/preferences", methods=["POST"])
+@require_auth
 def set_user_preferences():
     """
     Set cognitive preferences for a user profile.
@@ -710,9 +844,46 @@ def set_user_preferences():
 
 
 @app.route("/tool/execute", methods=["POST"])
+@require_auth
+def tool_execute():
+    """
+    A protected endpoint to execute a toolkit action (shell, file, gui).
+    Requires 'system_update' privilege and per-user opt-in for actuation.
+    """
+    data = request.get_json()
+    if not data or "user" not in data or "action" not in data:
+        return jsonify({"error": "Request must be JSON and include 'user' and 'action' keys."}), 400
+
+    user = data["user"].lower()
+    action = data.get("action", {})
+    action_type = action.get("type")
+
+    # Privilege check: only super_admins can use the toolkit
+    is_authorized = has_privilege(user, "system_update")
+    if not is_authorized:
+        audit.record("tool_execute", user, "/tool/execute", data, {"error": "Permission denied"}, authorized=False)
+        return jsonify({"error": f"User '{user}' does not have 'system_update' privilege."}), 403
+
+    result = {"error": "Unknown action type"}
+    if action_type == "shell":
+        command = action.get("command", "")
+        result = run_shell(command)
+    elif action_type == "read_file":
+        path = action.get("path", "")
+        result = read_file(path)
+    elif action_type == "write_file":
+        path = action.get("path", "")
+        content = action.get("content", "")
+        result = write_file(path, content)
+    
+    # Log the authorized action
+    audit.record("tool_execute", user, "/tool/execute", data, result, authorized=True)
+
+    return jsonify(result), 200
 
 
 @app.route("/user/profile/<username>", methods=["GET"])
+@require_auth
 def get_profile(username: str):
     prof = ai.get_user_profile(username)
     if not prof:
@@ -720,6 +891,7 @@ def get_profile(username: str):
     return jsonify({username.lower(): prof}), 200
 
 @app.route("/system/reload", methods=["POST"])
+@require_auth
 def system_reload():
     """
     A protected endpoint to reload the AI's knowledge base from disk.
@@ -738,6 +910,7 @@ def system_reload():
     return jsonify({"status": "success", "message": "Knowledge base has been reloaded."})
 
 @app.route("/system/set_model", methods=["POST"])
+@require_auth
 def set_model():
     """
     A protected endpoint to set the preferred language model.
@@ -763,6 +936,7 @@ def set_model():
     return jsonify({"status": "success", "message": f"Preferred model is now '{model_choice}'."})
 
 @app.route("/feedback/effectiveness", methods=["POST"])
+@require_auth
 def update_effectiveness():
     """
     API endpoint for Mommy AI to learn from outcomes and adjust her strategies.
@@ -859,6 +1033,7 @@ def independence_status():
     }), 200
 
 @app.route("/learning/knowledge", methods=["GET"])
+@require_auth
 def learned_knowledge():
     """
     Get all learned knowledge topics and facts.
@@ -868,6 +1043,7 @@ def learned_knowledge():
     }), 200
 
 @app.route("/language/analyze", methods=["POST"])
+@require_auth
 def analyze_query():
     """
     Analyze a query using language understanding system.
@@ -888,6 +1064,7 @@ def analyze_query():
     }), 200
 
 @app.route("/language/intent", methods=["POST"])
+@require_auth
 def recognize_intent():
     """
     Recognize the primary intent from a user query.
@@ -908,6 +1085,7 @@ def recognize_intent():
     }), 200
 
 @app.route("/language/sentiment", methods=["POST"])
+@require_auth
 def analyze_sentiment():
     """
     Analyze sentiment of a query.
@@ -931,12 +1109,39 @@ def language_statistics():
     stats = ai.language_understanding.get_statistics()
     return jsonify(stats), 200
 
+@app.route("/care/log_event", methods=["POST"])
+@require_auth
+def log_care_event():
+    """
+    Logs a significant event for the proactive care system.
+    Expected JSON: {"event_type": "meltdown", "magnitude": 1}
+    Valid types: "chore_completed", "pain_event", "meltdown"
+    """
+    data = request.get_json()
+    if not data or "event_type" not in data:
+        return jsonify({"error": "Request must include 'event_type'"}), 400
+
+    event_type = data["event_type"]
+    magnitude = data.get("magnitude", 1)
+
+    if event_type not in ["chore_completed", "pain_event", "meltdown"]:
+        return jsonify({"error": "Invalid event_type"}), 400
+
+    proactive_care.log_event(event_type, magnitude)
+    return jsonify({"status": "success", "message": f"Logged event: {event_type}"}), 200
+
 if __name__ == "__main__":
     # Start the scheduler in a background thread.
     # The daemon=True flag ensures the thread will exit when the main app exits.
     scheduler_thread = threading.Thread(target=run_scheduler, daemon=True)
     scheduler_thread.start()
     logging.info("Lila Scheduler has been started in the background.")
+    
+    # Start the proactive care monitor in a background thread.
+    stop_care_event = threading.Event()
+    care_monitor_thread = threading.Thread(target=proactive_care.run_care_monitor, args=(stop_care_event,), daemon=True)
+    care_monitor_thread.start()
+    logging.info("Proactive Care Monitor has been started in the background.")
 
     # Runs the Flask development server
     app.run(host="0.0.0.0", port=5000, debug=True)

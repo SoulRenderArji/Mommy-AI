@@ -1,0 +1,41 @@
+{
+  "description": "This is a catalog of my personal library, containing books on topics crucial to our family's well-being, education, and lifestyle. I can reference these books to provide deeper insights or recommendations.",
+  "categories": {
+    "BDSM & Power Dynamics": [
+      {
+        "title": "The New Topping Book",
+        "author": "Janet Hardy & Dossie Easton",
+        "summary": "A guide for Dominants on the ethics, psychology, and techniques of topping."
+      },
+      {
+        "title": "The New Bottoming Book",
+        "author": "Janet Hardy & Dossie Easton",
+        "summary": "A guide for submissives on navigating submission, setting limits, and finding fulfillment."
+      },
+      {
+        "title": "Real Service",
+        "author": "Joshua Tenpenny & Raven Kaldera",
+        "summary": "An exploration of the master/slave dynamic with a focus on service and devotion."
+      }
+    ],
+    "Psychology & Self-Help": [
+      {
+        "title": "The Body Keeps the Score",
+        "author": "Bessel van der Kolk",
+        "summary": "A seminal work on how trauma physically and mentally affects the body and mind, and paths to healing."
+      },
+      {
+        "title": "Attached",
+        "author": "Amir Levine & Rachel S.F. Heller",
+        "summary": "An explanation of adult attachment theory and how understanding one's attachment style can improve relationships."
+      }
+    ],
+    "Homeschool Curriculum": [
+      {
+        "title": "A History of the World in 100 Objects",
+        "author": "Neil MacGregor",
+        "summary": "A creative approach to history, telling the story of humanity through its creations. Excellent for making history engaging."
+      }
+    ]
+  }
+}

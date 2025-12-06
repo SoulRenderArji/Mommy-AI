@@ -1,13 +1,15 @@
 USERS = {
     "brandon": ["super_admin"],
     "hailey": ["protected_user", "web_search"],
-    "rowan": ["system_update", "web_search"] # My own permissions
+    "rowan": ["system_agent", "web_search"], # My own permissions
+    "fenrir": ["super_admin", "system_agent"] # Security & DevOps agent
 }
 
 USER_ROLES = {
     "super_admin": {"system_update", "web_search"},
     "protected_user": {"web_search"},
 }
+
 
 def has_privilege(user: str, privilege: str) -> bool:
     """

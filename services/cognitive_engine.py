@@ -24,6 +24,7 @@ class DecisionTrace:
     options: List[Dict[str, Any]]
     selected_option: Dict[str, Any]
     confidence: float
+    selected_model: Optional[str]
     notes: List[str]
 
 
@@ -97,6 +98,16 @@ class CognitiveEngine:
         # Produce candidate strategies for answering the query. Each option has a type and score.
         options = []
 
+        # Tool Use Option: Check if the query matches a tool-use intent
+        tool_intent, tool_details = self._check_for_tool_intent(perception.get("query", ""))
+        if tool_intent:
+            options.append({
+                "type": "tool_use",
+                "description": f"Use '{tool_details.get('type')}' tool to answer the query.",
+                "details": tool_details,
+                "score": 0.95  # High priority if a tool matches
+            })
+
         # Use configured creativity bias for option scoring (may be overridden by profile)
         creativity_bias = self.creativity_bias
 
@@ -142,6 +153,49 @@ class CognitiveEngine:
         # Normalize and return
         # In real system, we might factor in user preferences, risk, safety, etc.
         return sorted(options, key=lambda o: o["score"], reverse=True)
+
+    def _check_for_tool_intent(self, query: str) -> Tuple[bool, Optional[Dict]]:
+        """
+        A simple recognizer for queries that imply tool usage.
+        In a real system, this would be a more sophisticated NLP classifier.
+        """
+        query_lower = query.lower()
+        # Shell command patterns
+        if any(k in query_lower for k in ["disk space", "memory usage", "list files", "what is my ip"]):
+            command = ""
+            if "disk space" in query_lower: command = "df -h"
+            if "memory usage" in query_lower: command = "free -h"
+            if "list files" in query_lower: command = "ls -la"
+            if "what is my ip" in query_lower: command = "hostname -I"
+            return True, {"type": "shell", "command": command}
+        if query_lower.startswith("run command"):
+            command = query[len("run command"):].strip()
+            return True, {"type": "shell", "command": command}
+        return False, None
+
+    def _select_best_llm(self, interpretation: Dict[str, Any], preferred_model: str, gemini_available: bool, ollama_available: bool) -> Optional[str]:
+        """Selects the best LLM for the task based on intent and availability."""
+        intent = interpretation.get("intent")
+        
+        # Hard override from server config
+        if preferred_model == "gemini":
+            return "gemini" if gemini_available else None
+        if preferred_model == "ollama":
+            return "ollama" if ollama_available else None
+
+        # Default to 'auto' logic
+        # Favor Gemini for coding, technical questions, and general knowledge
+        if intent in ["command", "question"] and gemini_available:
+            return "gemini"
+        
+        # Favor Ollama for emotional, intimate, or role-play heavy queries if available
+        if intent in ["emotional", "casual_chat"] and ollama_available:
+            return "ollama"
+
+        # Fallback logic: prefer Gemini if available, otherwise Ollama, otherwise None.
+        if gemini_available: return "gemini"
+        if ollama_available: return "ollama"
+        return None
 
     def _evaluate_and_select(self, options: List[Dict[str, Any]], interpretation: Dict[str, Any]) -> Tuple[Dict[str, Any], float]:
         # Basic selection: choose highest score unless business rules override
@@ -192,13 +246,27 @@ class CognitiveEngine:
             response_style=response_style,
         )
 
-        # If profile suggests extra constraints (e.g., conservative_user), we can append guidance
+        # If profile suggests extra constraints (e.g., conservative_user), append guidance
         if profile and profile.get("cognitive_preferences", {}).get("conservative", False):
             prompt_text += "\n\nNote: Be conservative in assertions; clearly label uncertain suggestions."
 
+        # If creativity mode is enabled, add an explicit verification/instruction block
+        if creativity_mode:
+            prompt_text += (
+                "\n\nIMPORTANT: Some suggestions below may be creative or unconventional. "
+                "For any creative suggestion, include a brief verification step the user can take, "
+                "a short note about potential risks or assumptions, and label the item as 'Suggestion' when uncertain."
+            )
+
         return prompt_text, system_msg
 
-    def decide(self, query: str, user: str, profile: Optional[Dict] = None) -> DecisionTrace:
+    def decide(self,
+               query: str,
+               user: str,
+               profile: Optional[Dict] = None,
+               preferred_model: str = "auto",
+               gemini_available: bool = False,
+               ollama_available: bool = False) -> DecisionTrace:
         """
         Main entry point. Returns a DecisionTrace dataclass containing a summarized trace
         of perception, interpretation, candidate options, the selected option, confidence, and notes.
@@ -221,6 +289,9 @@ class CognitiveEngine:
         finally:
             self.creativity_bias = original_creativity
         selected, confidence, notes = self._evaluate_and_select(options, interpretation)
+        
+        # After selecting the strategy, select the best LLM for it
+        selected_model = self._select_best_llm(interpretation, preferred_model, gemini_available, ollama_available)
 
         trace = DecisionTrace(
             timestamp=start,
@@ -229,10 +300,31 @@ class CognitiveEngine:
             options=options,
             selected_option=selected,
             confidence=confidence,
+            selected_model=selected_model,
             notes=notes
         )
 
         return trace
+
+    def summarize_trace(self, trace: DecisionTrace, level: str = "summary") -> Dict[str, Any]:
+        """
+        Return a serializable summary of a DecisionTrace.
+        level: 'summary' returns a concise trace; 'detailed' returns the full trace.
+        """
+        if level == "detailed":
+            # Return everything as dict
+            return asdict(trace)
+
+        # Summary: timestamp, interpretation, selected option, confidence, short notes
+        summary = {
+            "timestamp": trace.timestamp,
+            "interpretation": trace.interpretation,
+            "selected_option": trace.selected_option,
+            "confidence": trace.confidence,
+            "selected_model": trace.selected_model,
+            "notes": trace.notes,
+        }
+        return summary
 
     def is_fact_accepted(self, statement_confidence: float) -> bool:
         """Determine if a statement should be accepted as fact by thresholding."""
