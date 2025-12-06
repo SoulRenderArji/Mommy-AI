@@ -142,6 +142,12 @@ class MommyAI:
         else:
             self.ollama_client = None
 
+        # Fatal check: if no models are available, the AI cannot function.
+        if self.model is None and self.ollama_client is None:
+            self.logger.critical("FATAL: No language models are available. Rowan will be unable to think or speak.")
+            self.logger.critical("Please configure GEMINI_API_KEY in your .env file or ensure the Ollama server is running and configured.")
+            exit("FATAL: No language models available.")
+
         self.logger.info("Mommy AI is waking up...")
 
     def _load_json_file(self, filename: str) -> Dict[str, Any]:
