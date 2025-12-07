@@ -11,13 +11,18 @@ import json
 import os
 import logging
 import requests
+from dotenv import load_dotenv
 from threading import Thread, Event
+
+# Load environment variables from .env file
+load_dotenv()
 
 STATE_FILE = "hailey_state.json"
 TIME_WINDOW_SECONDS = 24 * 60 * 60  # 24 hours
 CHECK_INTERVAL_SECONDS = 15 * 60    # Every 15 minutes
 RESILIENCE_THRESHOLD = 5            # Trigger intervention if score is this or lower
-API_URL = "http://127.0.0.1:5000/ask"
+API_BASE_URL = os.getenv("MOMMY_API_URL", "http://127.0.0.1:5000")
+API_URL = f"{API_BASE_URL}/ask"
 
 def log_event(event_type: str, magnitude: int = 1):
     """Logs a significant event for Hailey."""
@@ -36,8 +41,10 @@ def log_event(event_type: str, magnitude: int = 1):
         "magnitude": magnitude
     })
 
-    with open(STATE_FILE, 'w') as f:
+    temp_file = f"{STATE_FILE}.tmp"
+    with open(temp_file, 'w') as f:
         json.dump(state, f)
+    os.rename(temp_file, STATE_FILE)
     logging.info(f"[Proactive Care] Logged event: {event_type} (magnitude: {magnitude})")
 
 def _calculate_resilience() -> int:
@@ -45,23 +52,28 @@ def _calculate_resilience() -> int:
     if not os.path.exists(STATE_FILE):
         return 20  # Default to a healthy score
 
-    with open(STATE_FILE, 'r') as f:
-        state = json.load(f)
+    try:
+        with open(STATE_FILE, 'r') as f:
+            state = json.load(f)
+    except (json.JSONDecodeError, FileNotFoundError):
+        return 20 # Return healthy score if file is corrupt or missing
 
     now = time.time()
     recent_events = [e for e in state["events"] if now - e["timestamp"] < TIME_WINDOW_SECONDS]
 
-    # Clean up old events
+    # Clean up old events by writing to a temp file and then renaming (atomic operation)
     state["events"] = recent_events
-    with open(STATE_FILE, 'w') as f:
+    temp_file = f"{STATE_FILE}.tmp"
+    with open(temp_file, 'w') as f:
         json.dump(state, f)
+    os.rename(temp_file, STATE_FILE)
 
     score = 20  # Start with a baseline healthy score
     for event in recent_events:
         if event["type"] == "chore_completed":
             score += 1 * event["magnitude"]
-        elif event["type"] == "pain_event":
-            score += 2 * event["magnitude"] # Per instructions, pain events are weighted
+        elif event["type"] == "pain_event": # This was a bug, pain should decrease resilience
+            score -= 2 * event["magnitude"] # Per instructions, pain events are weighted
         elif event["type"] == "meltdown":
             score -= 5 * event["magnitude"]
 
@@ -74,7 +86,7 @@ def _trigger_intervention(score: int):
     try:
         prompt = "My proactive care system has detected that Hailey's resilience index is low. I need to check in on her. I will gently ask her how she's feeling and suggest we enter 'Protocol Green' for some rest and quiet time. I will be extra nurturing and supportive."
         payload = {"user": "rowan", "query": prompt}
-        requests.post(API_URL, json=payload, timeout=10)
+        requests.post(API_URL, json=payload, timeout=30)
     except requests.exceptions.RequestException as e:
         logging.error(f"[Proactive Care] Could not trigger intervention: {e}")
 

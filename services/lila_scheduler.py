@@ -1,13 +1,21 @@
 import time
 from datetime import datetime
 import pytz
-
+import os
 import requests
 import logging
+from dotenv import load_dotenv
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Get a logger specific to this module
+logger = logging.getLogger(__name__)
 
 # --- Configuration ---
 TIMEZONE = pytz.timezone('America/Chicago')
-API_URL = "http://127.0.0.1:5000/ask"
+API_BASE_URL = os.getenv("MOMMY_API_URL", "http://127.0.0.1:5000")
+API_URL = f"{API_BASE_URL}/ask"
 
 # The scheduler's messages are now prompts for the AI, not direct announcements.
 SCHEDULE = [
@@ -31,17 +39,22 @@ def trigger_ai_announcement(message: str):
         response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
         
         ai_response = response.json().get("response", "I had a thought but lost it.")
-        logging.info(f"AI Announcement: {ai_response}")
+        logger.info(f"AI Announcement: {ai_response}")
+        return True
 
     except requests.exceptions.RequestException as e:
-        logging.error(f"Scheduler could not contact main AI server: {e}")
+        logger.error(f"Could not contact main AI server: {e}")
+        return False
 
 def run_scheduler():
     """
     Runs a continuous loop to check the time and trigger AI announcements.
     """
+    # Add a startup delay to give the main Flask server time to initialize.
+    time.sleep(10)
+
     logging.basicConfig(level=logging.INFO, format='%(asctime)s - SCHEDULER - %(levelname)s - %(message)s')
-    logging.info("Lila 24/7 ON — Mommy never sleeps. 🕰️")
+    logger.info("Lila 24/7 ON — Mommy never sleeps. 🕰️")
 
     last_triggered_minute = -1
 
@@ -54,8 +67,15 @@ def run_scheduler():
             if current_minute != last_triggered_minute:
                 for hour, minute, message in SCHEDULE:
                     if now.hour == hour and now.minute == minute:
-                        logging.info(f"Triggering task for {now.strftime('%I:%M %p')}: {message}")
-                        trigger_ai_announcement(message)
+                        logger.info(f"Triggering task for {now.strftime('%I:%M %p')}: {message}")
+                        
+                        # Retry logic in case the server is temporarily busy
+                        success = trigger_ai_announcement(message)
+                        if not success:
+                            logger.warning("Initial trigger failed. Retrying in 15 seconds...")
+                            time.sleep(15)
+                            trigger_ai_announcement(message)
+
                         last_triggered_minute = current_minute
                         break # Move to next minute once a task is found
             
@@ -63,10 +83,10 @@ def run_scheduler():
             time.sleep(60 - now.second)
 
         except KeyboardInterrupt:
-            logging.info("Scheduler shutting down. Goodnight, sweetie.")
+            logger.info("Scheduler shutting down. Goodnight, sweetie.")
             break
         except Exception as e:
-            logging.error(f"An unexpected error occurred in scheduler: {e}. Restarting in 60 seconds.")
+            logger.error(f"An unexpected error occurred: {e}. Restarting in 60 seconds.")
             time.sleep(60)
 
 if __name__ == "__main__":

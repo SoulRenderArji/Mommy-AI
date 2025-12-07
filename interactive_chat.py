@@ -2,44 +2,50 @@ import sys
 sys.path.append('.') # Adds the project root to the Python path
 
 import asyncio
-import requests
 import pyttsx3
 import speech_recognition as sr
+import requests
+import os
+from dotenv import load_dotenv
 
+# Load environment variables from .env file
+load_dotenv()
 CURRENT_USER = "hailey"  # Default user
-API_URL = "http://127.0.0.1:5000/ask"
+API_BASE_URL = os.getenv("MOMMY_API_URL", "http://127.0.0.1:5000")
+API_URL = f"{API_BASE_URL}/ask"
 
-def initialize_tts():
-    """Initializes the text-to-speech engine."""
+def speak(text: str):
+    """
+    Speaks the given text using a new, thread-safe TTS engine instance.
+    This function is designed to be called in a separate thread.
+    """
     engine = pyttsx3.init()
     voices = engine.getProperty('voices')
-    # Attempt to find a female voice
     for voice in voices:
         if voice.gender == 'female':
             engine.setProperty('voice', voice.id)
             break
-    engine.setProperty('rate', 175) # Adjust speech rate
-    return engine
-
-def speak(engine, text):
-    """Speaks the given text using the TTS engine."""
+    engine.setProperty('rate', 175)
     engine.say(text)
     engine.runAndWait()
 
 def listen_for_command():
     """Listens for a spoken command from the user."""
-    r = sr.Recognizer()
-    with sr.Microphone() as source:
-        print("\nMommy is listening... 🤫")
-        r.pause_threshold = 1.0 # seconds of non-speaking audio before a phrase is considered complete
-        r.adjust_for_ambient_noise(source)
-        audio = r.listen(source)
     try:
-        return r.recognize_google(audio)
-    except sr.UnknownValueError:
-        return "Mommy couldn't quite hear you, sweetie. Can you say that again?"
-    except sr.RequestError:
-        return "Mommy's ears are having trouble connecting. Let's try typing for now."
+        r = sr.Recognizer()
+        with sr.Microphone() as source:
+            print("\nMommy is listening... 🤫")
+            r.pause_threshold = 1.0 # seconds of non-speaking audio before a phrase is considered complete
+            r.adjust_for_ambient_noise(source)
+            audio = r.listen(source)
+        try:
+            return r.recognize_google(audio)
+        except sr.UnknownValueError:
+            return "Mommy couldn't quite hear you, sweetie. Can you say that again?"
+        except sr.RequestError:
+            return "Mommy's ears are having trouble connecting. Let's try typing for now."
+    except AttributeError:
+        return "It seems there's no microphone connected, sweetie. Let's stick to typing."
 
 def ask_mommy_api(query: str, user: str) -> str:
     """Sends a query to the MommyAI server and gets a response."""
@@ -60,10 +66,13 @@ async def main():
     """
     Main loop for an interactive chat session that uses persistent memory.
     """
-    tts_engine = initialize_tts()
+    global CURRENT_USER
+    disclaimer = "All parties represented or interacting with this system are over the age of 21. This system does not involve or condone interaction with actual minors."
+
     print("--- Mommy's Listening (Unified Core) ---")
-    speak(tts_engine, "I'm here, sweetie. Tell me anything.")
+    await asyncio.to_thread(speak, f"I'm here, sweetie. Tell me anything. {disclaimer}")
     print("You can switch users by typing 'login <name>' (e.g., 'login brandon').")
+    print(f"\n[System Notice: {disclaimer}]")
 
     while True:
         try:
@@ -82,7 +91,6 @@ async def main():
                 break
             
             if query.lower().startswith("login "):
-                global CURRENT_USER
                 new_user = query.split(" ", 1)[1].lower()
                 CURRENT_USER = new_user
                 print(f"Mommy sees you, {CURRENT_USER.capitalize()}!")
@@ -90,11 +98,12 @@ async def main():
 
             response = await asyncio.to_thread(ask_mommy_api, query, CURRENT_USER)
             print(f"\nMommy says: {response}") # Print spoken response for the log
-            speak(tts_engine, response)
+            await asyncio.to_thread(speak, response)
 
         except KeyboardInterrupt:
             print("\nOkay, sweetie. I'll be here if you need me.")
             break
+        await asyncio.sleep(0) # Yield control to the event loop
 
 if __name__ == "__main__":
     asyncio.run(main())

@@ -11,3 +11,14 @@ __pycache__/
 
 # Memory file
 rowan_memory.txt
+node_modules
+
+# Log files
+logs/
+
+# Generated data and databases
+services/lila_data.db
+services/interactions/
+
+# Proactive care state file
+hailey_state.json

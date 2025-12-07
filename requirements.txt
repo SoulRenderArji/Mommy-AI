@@ -1,0 +1,18 @@
+flask
+flask-cors
+python-dotenv
+google-generativeai
+ollama
+pytz
+requests
+pyttsx3
+SpeechRecognition
+
+# Dependencies from services/requirements.txt for web scraping/automation
+undetected-chromedriver
+beautifulsoup4
+selenium
+pytesseract
+Pillow
+pydantic
+lxml

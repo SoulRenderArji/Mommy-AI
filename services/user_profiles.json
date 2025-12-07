@@ -8,5 +8,10 @@
     "display_name": "Brandon",
     "age": null,
     "pronouns": "he/him"
+  },
+  "rowan": {
+    "birth_date": "2004-01-01",
+    "display_name": "Rowan",
+    "pronouns": "she/her"
   }
 }

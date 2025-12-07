@@ -388,7 +388,6 @@
         // Load users from server
         async function loadUsers() {
             try {
-                // Try to get users from stored profiles endpoint
                 const response = await fetch(`${config.serverUrl}/system/status`);
                 if (response.ok) {
                     const data = await response.json();
@@ -396,10 +395,8 @@
                 }
             } catch (error) {
                 console.error('Error loading users:', error);
-            }
-            
-            // Fallback: use default users
-            return ['Hailey', 'Brandon'];
+            }            
+            return []; // Return empty array on failure; connection error is handled elsewhere.
         }
 
         // Update connection status
