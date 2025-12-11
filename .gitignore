@@ -22,3 +22,5 @@ services/interactions/
 
 # Proactive care state file
 hailey_state.json
+venv/
+venv/

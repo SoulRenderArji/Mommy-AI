@@ -77,6 +77,28 @@
             color: white;
         }
 
+        .voice-toggle {
+            padding: 8px 12px;
+            border: 2px solid white;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
+        .icon-btn {
+            padding: 8px 12px;
+            border: 2px solid white;
+            border-radius: 8px;
+            background: rgba(255, 255, 255, 0.2);
+            color: white;
+            font-size: 14px;
+            cursor: pointer;
+            transition: all 0.3s;
+        }
+
         .status {
             padding: 8px 12px;
             background: rgba(255, 255, 255, 0.2);
@@ -313,6 +335,26 @@
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
         }
+
+        .camera-container {
+            display: none;
+            background: #000;
+            margin-bottom: 10px;
+            border-radius: 12px;
+            overflow: hidden;
+            position: relative;
+        }
+        
+        video {
+            width: 100%;
+            max-height: 300px;
+            object-fit: cover;
+        }
+
+        .snap-btn {
+            width: 100%;
+            border-radius: 0 0 12px 12px;
+        }
     </style>
 </head>
 <body>
@@ -323,8 +365,16 @@
                 <select id="userSelect" class="user-select">
                     <option value="">Select User...</option>
                 </select>
+                <button id="micToggle" class="icon-btn">🎤 Mic</button>
+                <button id="camToggle" class="icon-btn">📷 Cam</button>
+                <button id="voiceToggle" class="voice-toggle">🔇 Voice Off</button>
                 <div class="status" id="status">Connecting...</div>
             </div>
+        </div>
+        
+        <div class="camera-container" id="cameraContainer">
+            <video id="videoPreview" autoplay playsinline></video>
+            <button id="snapButton" class="snap-btn">📸 Snap & Send to Mommy</button>
         </div>
 
         <div class="chat-messages" id="chatMessages">
@@ -361,7 +411,12 @@
             users: [],
             reconnectAttempts: 0,
             isLoading: false,
-            messageHistory: []
+            messageHistory: [],
+            voiceEnabled: true,
+            isListening: false,
+            isCameraOn: false,
+            isContinuous: false,
+            isProcessing: false
         };
 
         const elements = {
@@ -369,6 +424,12 @@
             messageInput: document.getElementById('messageInput'),
             sendButton: document.getElementById('sendButton'),
             userSelect: document.getElementById('userSelect'),
+            voiceToggle: document.getElementById('voiceToggle'),
+            micToggle: document.getElementById('micToggle'),
+            camToggle: document.getElementById('camToggle'),
+            cameraContainer: document.getElementById('cameraContainer'),
+            videoPreview: document.getElementById('videoPreview'),
+            snapButton: document.getElementById('snapButton'),
             status: document.getElementById('status')
         };
 
@@ -534,7 +595,7 @@
 
         // Send message
         async function sendMessage() {
-            if (!state.currentUser || state.isLoading) {
+            if (!state.currentUser || state.isProcessing) {
                 return;
             }
 
@@ -543,14 +604,20 @@
                 return;
             }
 
+            // Stop recognition if it's running to prevent picking up self/noise during processing
+            if (recognition && state.isListening) {
+                recognition.stop();
+            }
+            state.isProcessing = true;
+
             // Add user message to chat
             addMessage(message, 'user');
             elements.messageInput.value = '';
-            elements.messageInput.focus();
+            // elements.messageInput.focus(); // Don't steal focus in voice mode
 
             // Show typing indicator
             showTyping();
-            state.isLoading = true;
+            // state.isLoading = true; // We use isProcessing now
 
             try {
                 const response = await fetch(`${config.serverUrl}/ask`, {
@@ -569,6 +636,10 @@
                 if (response.ok) {
                     const data = await response.json();
                     addMessage(data.response, 'ai');
+
+                    if (state.voiceEnabled) {
+                        await speakText(data.response);
+                    }
                 } else {
                     const error = await response.json();
                     addMessage(`Error: ${error.error || 'Server error'}`, 'ai');
@@ -579,8 +650,137 @@
                 addMessage('Sorry, I had trouble understanding. Please try again.', 'ai');
                 updateConnectionStatus(false);
             } finally {
-                state.isLoading = false;
+                state.isProcessing = false;
+                if (state.isContinuous && recognition) {
+                    try { recognition.start(); } catch(e) { console.log("Resume error:", e); }
+                }
             }
+        }
+
+        async function speakText(text) {
+            try {
+                await fetch(`${config.serverUrl}/speak`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        user: state.currentUser,
+                        text: text
+                    })
+                });
+                // Estimate duration: 80ms per character to allow TTS to finish before listening again
+                return new Promise(resolve => setTimeout(resolve, text.length * 80));
+            } catch (error) {
+                console.error('Error requesting speech:', error);
+            }
+        }
+
+        // --- Speech Recognition ---
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        let recognition;
+
+        if (SpeechRecognition) {
+            recognition = new SpeechRecognition();
+            recognition.continuous = false;
+            recognition.lang = 'en-US';
+
+            recognition.onstart = () => {
+                state.isListening = true;
+                elements.micToggle.style.background = 'rgba(255, 59, 59, 0.5)';
+                elements.micToggle.textContent = '🔴 Listening...';
+            };
+
+            recognition.onend = () => {
+                state.isListening = false;
+                
+                if (state.isContinuous && !state.isProcessing) {
+                    try { recognition.start(); } catch(e) {}
+                    return;
+                }
+
+                if (!state.isContinuous) {
+                    elements.micToggle.style.background = 'rgba(255, 255, 255, 0.2)';
+                    elements.micToggle.textContent = '🎤 Mic';
+                }
+            };
+
+            recognition.onerror = (event) => {
+                console.error("Speech recognition error", event.error);
+                state.isListening = false;
+                if (!state.isContinuous) {
+                    elements.micToggle.style.background = 'rgba(255, 255, 255, 0.2)';
+                    elements.micToggle.textContent = '🎤 Mic';
+                }
+                if (event.error === 'not-allowed') {
+                    alert("Microphone access denied. Please allow microphone permissions in your browser settings (click the lock icon in the address bar).");
+                }
+            };
+
+            recognition.onresult = (event) => {
+                const transcript = event.results[0][0].transcript;
+                elements.messageInput.value = transcript;
+                sendMessage();
+            };
+        }
+
+        // --- Camera Handling ---
+        let stream = null;
+
+        async function toggleCamera() {
+            if (state.isCameraOn) {
+                // Turn off
+                if (stream) {
+                    stream.getTracks().forEach(track => track.stop());
+                }
+                elements.cameraContainer.style.display = 'none';
+                elements.camToggle.style.background = 'rgba(255, 255, 255, 0.2)';
+                state.isCameraOn = false;
+            } else {
+                // Turn on
+                if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+                    alert("Camera API not available. Please ensure you are using HTTPS or localhost.");
+                    return;
+                }
+                try {
+                    stream = await navigator.mediaDevices.getUserMedia({ video: true });
+                    elements.videoPreview.srcObject = stream;
+                    elements.cameraContainer.style.display = 'block';
+                    elements.camToggle.style.background = 'rgba(76, 209, 55, 0.3)';
+                    state.isCameraOn = true;
+                } catch (err) {
+                    console.error("Camera error:", err);
+                    if (err.name === 'NotAllowedError' || err.name === 'PermissionDeniedError') {
+                        alert("Camera access denied. Please allow camera permissions in your browser settings (click the lock icon in the address bar).");
+                    } else {
+                        alert(`Could not access camera: ${err.message}`);
+                    }
+                }
+            }
+        }
+
+        async function snapAndSend() {
+            if (!stream) return;
+            
+            const canvas = document.createElement('canvas');
+            canvas.width = elements.videoPreview.videoWidth;
+            canvas.height = elements.videoPreview.videoHeight;
+            canvas.getContext('2d').drawImage(elements.videoPreview, 0, 0);
+            
+            canvas.toBlob(async (blob) => {
+                const formData = new FormData();
+                formData.append('image', blob, 'capture.jpg');
+                formData.append('user', state.currentUser);
+
+                addMessage('[Sending photo to Mommy...]', 'user');
+                
+                try {
+                    const response = await fetch(`${config.serverUrl}/see`, { method: 'POST', body: formData });
+                    const data = await response.json();
+                    addMessage(data.response, 'ai');
+                    if (state.voiceEnabled) speakText(data.response);
+                } catch (e) {
+                    addMessage("Error sending photo.", 'ai');
+                }
+            }, 'image/jpeg');
         }
 
         // Event listeners
@@ -601,8 +801,51 @@
 
         elements.sendButton.addEventListener('click', sendMessage);
 
+        elements.voiceToggle.addEventListener('click', () => {
+            state.voiceEnabled = !state.voiceEnabled;
+            if (state.voiceEnabled) {
+                elements.voiceToggle.textContent = '🔊 Voice On';
+                elements.voiceToggle.style.background = 'rgba(76, 209, 55, 0.3)';
+                elements.voiceToggle.style.borderColor = '#4cd137';
+            } else {
+                elements.voiceToggle.textContent = '🔇 Voice Off';
+                elements.voiceToggle.style.background = 'rgba(255, 255, 255, 0.2)';
+                elements.voiceToggle.style.borderColor = 'white';
+            }
+        });
+
+        elements.micToggle.addEventListener('click', () => {
+            if (!recognition) {
+                alert("Speech recognition not supported in this browser.");
+                return;
+            }
+            
+            state.isContinuous = !state.isContinuous;
+            
+            if (state.isContinuous) {
+                elements.micToggle.textContent = '🔄 Auto Mic';
+                elements.micToggle.style.borderColor = '#4cd137';
+                if (!state.isListening) recognition.start();
+            } else {
+                elements.micToggle.textContent = '🎤 Mic';
+                elements.micToggle.style.borderColor = 'white';
+                recognition.stop();
+            }
+        });
+
+        elements.camToggle.addEventListener('click', toggleCamera);
+        elements.snapButton.addEventListener('click', snapAndSend);
+
         // Initialize on load
-        window.addEventListener('load', initializeChat);
+        window.addEventListener('load', () => {
+            // Set initial voice button state
+            if (state.voiceEnabled) {
+                elements.voiceToggle.textContent = '🔊 Voice On';
+                elements.voiceToggle.style.background = 'rgba(76, 209, 55, 0.3)';
+                elements.voiceToggle.style.borderColor = '#4cd137';
+            }
+            initializeChat();
+        });
     </script>
 </body>
 </html>

@@ -5,8 +5,7 @@ import logging
 from typing import Any, Dict, Callable, Optional
 import threading
 import sqlite3
-from datetime import datetime
-
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_file
 from flask_cors import CORS
 import google.generativeai as genai
@@ -17,13 +16,21 @@ from services.lila_scheduler import run_scheduler
 from services.learning_system import LearningSystem
 from services.language_understanding import LanguageUnderstanding
 from services.cognitive_engine import CognitiveEngine
+from services.neurolees_service import Neurolees
+from services.sensory_service import get_sensory_input
 from dataclasses import asdict
 from services import audit
 from logging.handlers import RotatingFileHandler
 from functools import wraps
 from services import proactive_care
+import pytz
 import requests
 from bs4 import BeautifulSoup
+import pyttsx3
+from PIL import Image
+import io
+import subprocess
+import tempfile
 from services.toolkit import run_shell, read_file, write_file, git_commit, gui_action
 try:
     from ollama import Client as OllamaClient
@@ -91,6 +98,10 @@ class MommyAI:
         self.cognitive_engine = CognitiveEngine(language_understanding=self.language_understanding, learning_system=self.learning_system)
         self.logger.info("Cognitive engine initialized")
 
+        # Initialize Neurolees for emotional and personality simulation
+        self.neurolees = Neurolees(base_path=base_path)
+        self.logger.info("Neurolees emotional core is active.")
+
         # Toolkit helpers (stateless wrappers) for shell/file/gui actions
         # Important: endpoints that expose these must check privileges and user preferences
         self.toolkit = None  # kept for clarity; functions are imported at module level
@@ -100,7 +111,7 @@ class MommyAI:
         dotenv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '.env')
         load_dotenv(dotenv_path=dotenv_path)
         api_key = os.getenv("GEMINI_API_KEY")
-        genai.configure(api_key=api_key)
+        gemini_model_name = os.getenv("GEMINI_MODEL_NAME", "gemini-1.5-flash")
 
         # Define safety settings to allow the model to process the specific content
         # of the knowledge base without being blocked by default filters.
@@ -115,8 +126,16 @@ class MommyAI:
         if not api_key:
             self.logger.critical("GEMINI_API_KEY not found. Please create a .env file with your API key.")
             self.model = None
+        elif "googleusercontent.com" in api_key:
+            self.logger.critical("GEMINI_API_KEY appears to be an OAuth Client ID. Please use an API Key (starts with 'AIza').")
+            self.model = None
+        elif api_key.startswith("GOCSPX-"):
+            self.logger.critical("GEMINI_API_KEY appears to be an OAuth Client Secret. Please use an API Key (starts with 'AIza').")
+            self.model = None
         else:
-            self.model = genai.GenerativeModel('gemini-pro', safety_settings=safety_settings)
+            genai.configure(api_key=api_key)
+            self.gemini_model_name = gemini_model_name
+            self.model = genai.GenerativeModel(gemini_model_name, safety_settings=safety_settings)
 
         # Ollama fallback (optional). Configure with .env: OLLAMA_ENABLED=true, OLLAMA_MODEL=dolphin-nsfw
         ollama_enabled = os.getenv("OLLAMA_ENABLED", "false").lower() in ("1", "true", "yes")
@@ -128,9 +147,20 @@ class MommyAI:
                 host = os.getenv("OLLAMA_HOST") # Use host from .env if provided
                 self.ollama_client = OllamaClient(host=host)
                 # Verify connection and check for the desired model
-                local_models = self.ollama_client.list()["models"]
-                model_names = [m["name"] for m in local_models]
+                list_response = self.ollama_client.list()
+                # Handle response being an object (new lib) or dict (old lib)
+                if hasattr(list_response, 'models'):
+                    local_models = list_response.models
+                else:
+                    local_models = list_response.get("models", [])
+
+                # Robustly extract model names from objects or dicts
+                model_names = [getattr(m, 'model', None) or getattr(m, 'name', None) or (m.get("model") if isinstance(m, dict) else None) or (m.get("name") if isinstance(m, dict) else None) for m in local_models]
+                model_names = [n for n in model_names if n] # Filter None
+
                 self.logger.info(f"Successfully connected to Ollama. Available models: {', '.join(model_names)}")
+                # Prefer local model to save costs/latency if available
+                self.preferred_model = "ollama"
                 
                 # Check if the default NSFW model is available and log a warning if not
                 if self.ollama_model not in model_names:
@@ -138,6 +168,15 @@ class MommyAI:
                         f"Ollama model '{self.ollama_model}' not found locally. "
                         f"Please run 'ollama pull {self.ollama_model}' to use it."
                     )
+                    # Smart fallback: prefer dolphin (avoiding 70b if possible), then llama, then whatever is first
+                    fallback = next((m for m in model_names if "dolphin" in m and "70b" not in m), None) or \
+                               next((m for m in model_names if "dolphin" in m), None) or \
+                               next((m for m in model_names if "llama" in m), None) or \
+                               (model_names[0] if model_names else None)
+                    
+                    if fallback:
+                        self.ollama_model = fallback
+                        self.logger.info(f"Automatically falling back to available model: '{self.ollama_model}'")
 
             except Exception as e:
                 self.ollama_client = None
@@ -150,6 +189,9 @@ class MommyAI:
             self.logger.critical("FATAL: No language models are available. Rowan will be unable to think or speak.")
             self.logger.critical("Please configure GEMINI_API_KEY in your .env file or ensure the Ollama server is running and configured.")
             exit("FATAL: No language models available.")
+
+        # Debug mode for UI error messages
+        self.debug_mode = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
 
         self.logger.info("Mommy AI is waking up...")
         
@@ -194,6 +236,18 @@ class MommyAI:
                     entry_text TEXT NOT NULL,
                     tags TEXT,
                     entry_type TEXT DEFAULT 'text'
+                )
+            """)
+            
+            # Create calendar table
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS calendar (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user TEXT NOT NULL,
+                    event_timestamp_utc TEXT NOT NULL,
+                    description TEXT NOT NULL,
+                    created_at_utc TEXT NOT NULL,
+                    reminded INTEGER DEFAULT 0
                 )
             """)
             conn.commit()
@@ -360,6 +414,78 @@ class MommyAI:
         except sqlite3.Error as e:
             self.logger.error(f"Error adding to family journal in {db_path}: {e}")
             return False
+
+    def add_calendar_event(self, user: str, event_timestamp_utc: str, description: str, db_filename: str = "lila_data.db") -> bool:
+        """Adds a new event to the calendar."""
+        db_path = os.path.join(self.base_path, db_filename)
+        created_at = datetime.utcnow().isoformat()
+        try:
+            # Validate timestamp format
+            datetime.fromisoformat(event_timestamp_utc.replace('Z', '+00:00'))
+        except ValueError:
+            self.logger.error(f"Invalid ISO 8601 timestamp format for calendar event: {event_timestamp_utc}")
+            return False
+
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute(
+                "INSERT INTO calendar (user, event_timestamp_utc, description, created_at_utc) VALUES (?, ?, ?, ?)",
+                (user, event_timestamp_utc, description, created_at)
+            )
+            conn.commit()
+            conn.close()
+            self.logger.info(f"New calendar event added for '{user}': '{description}'")
+            return True
+        except sqlite3.Error as e:
+            self.logger.error(f"Error adding to calendar in {db_path}: {e}")
+            return False
+
+    def get_upcoming_events(self, limit: int = 10, db_filename: str = "lila_data.db") -> list[dict[str, Any]]:
+        """Retrieves upcoming events from the calendar."""
+        db_path = os.path.join(self.base_path, db_filename)
+        now_utc = datetime.utcnow().isoformat()
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM calendar WHERE event_timestamp_utc >= ? ORDER BY event_timestamp_utc ASC LIMIT ?",
+                (now_utc, limit)
+            )
+            rows = cursor.fetchall()
+            conn.close()
+            return [dict(row) for row in rows]
+        except sqlite3.Error as e:
+            self.logger.error(f"Error fetching upcoming events from {db_path}: {e}")
+            return []
+
+    def check_for_reminders(self, reminder_window_minutes: int = 15, db_filename: str = "lila_data.db") -> list[dict[str, Any]]:
+        """Checks for events needing a reminder and returns them."""
+        db_path = os.path.join(self.base_path, db_filename)
+        now_utc = datetime.utcnow()
+        reminder_time_utc = (now_utc + timedelta(minutes=reminder_window_minutes)).isoformat()
+        
+        try:
+            conn = sqlite3.connect(db_path)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT * FROM calendar WHERE event_timestamp_utc >= ? AND event_timestamp_utc <= ? AND reminded = 0",
+                (now_utc.isoformat(), reminder_time_utc)
+            )
+            events = [dict(row) for row in cursor.fetchall()]
+            
+            # Mark events as reminded
+            event_ids = tuple(e['id'] for e in events)
+            if event_ids:
+                cursor.execute(f"UPDATE calendar SET reminded = 1 WHERE id IN ({','.join('?'*len(event_ids))})", event_ids)
+                conn.commit()
+            conn.close()
+            return events
+        except sqlite3.Error as e:
+            self.logger.error(f"Error checking for reminders in {db_path}: {e}")
+            return []
 
     def update_effectiveness(self, action_type: str, communication_style: str, feedback_delta: int, db_filename: str = "lila_data.db") -> bool:
         """
@@ -542,6 +668,69 @@ class MommyAI:
             self.logger.error(f"Ollama generate error: {e}")
             raise
 
+    def _generate_llm_response(self, prompt: str, system_msg: Optional[str], selected_model: str, user: str, user_query: str, fallback_allowed: bool = True) -> str:
+        """
+        Generates a response from the selected LLM, handling fallbacks and learning system interactions.
+        """
+        last_error = "Unknown error"
+        try:
+            if selected_model == "gemini":
+                if not self.model: raise ValueError("Gemini model not available.")
+                self.logger.info(f"Calling Gemini for response.")
+                response = self.model.generate_content(prompt)
+                ai_response_text = response.text
+            elif selected_model == "ollama":
+                if not self.ollama_client or not self.allow_nsfw: raise ValueError("Ollama model not available or not allowed.")
+                self.logger.info(f"Calling Ollama for response.")
+                ai_response_text = self._ollama_generate(prompt, system=system_msg)
+            else:
+                raise ValueError(f"Unknown model selected: {selected_model}")
+
+            self.learning_system.capture_response(user_query, ai_response_text, selected_model, user)
+            self.learning_system.extract_knowledge(0, user_query, ai_response_text)
+            self.learning_system.update_independence_metrics(handled_locally=False, llm_used=selected_model)
+            return ai_response_text
+
+        except Exception as e:
+            last_error = str(e)
+            # If the model is not found (404), try to list what IS available to help debug.
+            if "404" in last_error and "models/" in last_error and selected_model == "gemini":
+                try:
+                    available = [m.name for m in genai.list_models() if 'generateContent' in m.supported_generation_methods]
+                    last_error += f" | AVAILABLE MODELS: {', '.join(available)}"
+                except Exception as list_e:
+                    last_error += f" | Could not list models: {list_e}"
+
+            self.logger.warning(f"Primary model '{selected_model}' failed: {e}")
+            if fallback_allowed and selected_model == "gemini" and self.ollama_client and self.allow_nsfw:
+                self.logger.info("Falling back to Ollama.")
+                try:
+                    ai_response_text = self._ollama_generate(prompt, system=system_msg)
+                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama", fallback=True)
+                    return ai_response_text
+                except Exception as ollama_e:
+                    self.logger.error(f"Ollama fallback also failed: {ollama_e}")
+                    last_error = f"{e} | Fallback error: {ollama_e}"
+            
+            # Fallback: Ollama -> Gemini
+            if fallback_allowed and selected_model == "ollama" and self.model:
+                self.logger.info("Falling back to Gemini.")
+                try:
+                    response = self.model.generate_content(prompt)
+                    ai_response_text = response.text
+                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini", fallback=True)
+                    return ai_response_text
+                except Exception as gemini_e:
+                    self.logger.error(f"Gemini fallback also failed: {gemini_e}")
+                    last_error = f"{e} | Fallback error: {gemini_e}"
+
+        # If all else fails
+        self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
+        
+        if self.debug_mode:
+            return f"I have some thoughts on that, but I'm having a little trouble putting them into words right now. (Technical Error: {last_error})"
+        return "I have some thoughts on that, but I'm having a little trouble putting them into words right now. Could you ask me again in a moment?"
+
     def get_response(self, user_query: str, user: str, nsfw: bool = False, age: int | None = None, explain: bool = False, trace_level: str = "summary"):
         self.logger.info(f"Received query from '{user}': {user_query}")
 
@@ -560,12 +749,12 @@ class MommyAI:
         """
         try:
             # Use the most available model for this quick check
-            if self.model:
-                triage_response = self.model.generate_content(triage_prompt)
-                query_category = triage_response.text.strip().lower()
-            elif self.ollama_client:
+            if self.ollama_client:
                 triage_response = self._ollama_generate(triage_prompt)
                 query_category = triage_response.strip().lower()
+            elif self.model:
+                triage_response = self.model.generate_content(triage_prompt)
+                query_category = triage_response.text.strip().lower()
             else:
                 query_category = 'knowledge_query' # Fallback if no LLM is available
 
@@ -579,7 +768,7 @@ class MommyAI:
         if 'simple_chat' in query_category:
             self.logger.info("Handling as simple chat.")
             prompt = f"You are Rowan, a caring and nurturing Mommy. Your user, {user.capitalize()}, just said this to you: '{user_query}'. Respond with a short, loving, and reassuring message."
-            return self._generate_simple_emotional_response(prompt, user, user_query) # This was missing a return
+            return self._generate_simple_emotional_response(prompt, user, user_query)
 
         # --- Proceed with Full Cognitive Process for Knowledge Queries ---
         query_lower = user_query.lower()
@@ -611,6 +800,10 @@ class MommyAI:
         # Run the cognitive engine to decide strategy (local / hybrid / llm / creative)
         try:
             trace = self.cognitive_engine.decide(
+                # Add sensory input to the decision-making context
+                internal_state=self.neurolees.get_current_state(),
+                personality_context=self.neurolees.get_personality_context(),
+                sensory_input=get_sensory_input(),
                 query=user_query,
                 user=user,
                 profile=profile,
@@ -631,6 +824,14 @@ class MommyAI:
 
         # The Cognitive Engine now also selects the best model to use
         selected_model = trace.selected_model if trace else None
+
+        # Fallback: If Cognitive Engine failed (trace is None) or didn't select a model,
+        # default to the primary available model so we can still answer.
+        if not selected_model:
+            if self.ollama_client:
+                selected_model = "ollama"
+            elif self.model:
+                selected_model = "gemini"
 
         # --- Intimacy Override ---
         # If the query is about intimacy, force the use of the local NSFW model for privacy and better responses.
@@ -670,60 +871,23 @@ class MommyAI:
                 profile=profile,
                 creativity_mode=creative_mode,
             )
-            # Determine which model to use based on preference
-            if selected_model == "gemini":
-                try:
-                    response = self.model.generate_content(prompt)
-                    ai_response_text = response.text
-                    self.logger.info("Gemini enhanced concise response")
-                    # Capture response for learning
-                    self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
-                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                    self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
-                except Exception as e:
-                    self.logger.warning(f"Gemini failed for concise enhancement: {e}")
-                    # Fallback to Ollama if available
-                    if self.ollama_client and self.allow_nsfw:
-                        try:
-                            ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
-                            self.logger.info("Ollama provided concise enhancement after Gemini failure")
-                            # Capture response for learning
-                            self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
-                            self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama", fallback=True)
-                        except Exception as ollama_e:
-                            self.logger.error(f"Ollama fallback also failed: {ollama_e}")
-                            self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
-                    else:
-                        # If both LLMs fail, provide a graceful fallback message instead of raw context.
-                        ai_response_text = "I have some thoughts on that, but I'm having a little trouble putting them into words right now. Could you ask me again in a moment?"
-                        self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
-            elif selected_model == "ollama":
-                try:
-                    ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
-                    self.logger.info("Ollama provided concise enhancement")
-                    self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
-                    self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                except Exception:
-                    # Fallback if Ollama fails
-                    ai_response_text = "I have some thoughts on that, but I'm having a little trouble putting them into words right now. Could you ask me again in a moment?"
-                    self.logger.error("Ollama failed for hybrid response. Using fallback message.")
-            else:
-                # Fallback if no model was selected
+
+            if not selected_model:
                 ai_response_text = "I'm not sure how to respond to that right now, sweetie. My mind feels a bit fuzzy."
                 self.logger.error("No model selected for hybrid response. Using fallback message.")
                 self.learning_system.update_independence_metrics(handled_locally=False, llm_used=None)
+            else:
+                ai_response_text = self._generate_llm_response(prompt, system_msg or self.SHORT_SYSTEM_PROMPT, selected_model, user, user_query)
 
             if explain:
                 return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level) if trace else None}
             save_memory(ai_response_text, author="Rowan")
             trace_summary = self.cognitive_engine.summarize_trace(trace, level="full") if trace else None
-            log_interaction(user, user_query, ai_response_text, selected_model, trace_summary)
+            # Use the model from the trace for logging, as the helper might have used a fallback
+            log_interaction(user, user_query, ai_response_text, trace.selected_model if trace else "unknown", trace_summary)
             return ai_response_text
 
         # --- Strategy 3: Full LLM Response ---
-
-        # Strategy 3: Use a full LLM call if the engine decides it's necessary (or as a fallback).
         self.logger.info(f"Cognitive Engine chose '{selected_type}'. Using full LLM call.")
 
         if not selected_model:
@@ -749,47 +913,44 @@ class MommyAI:
             creativity_mode=creative_mode,
         )
 
-        try:
-            if selected_model == "gemini":
-                self.logger.info("Calling Gemini for full response.")
-                response = self.model.generate_content(prompt)
-                ai_response_text = response.text
-                self.learning_system.capture_response(user_query, ai_response_text, "gemini", user)
-                self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                self.learning_system.update_independence_metrics(handled_locally=False, llm_used="gemini")
-            elif selected_model == "ollama":
-                self.logger.info("Calling Ollama for full response.")
-                ai_response_text = self._ollama_generate(prompt, system=system_msg or self.SHORT_SYSTEM_PROMPT)
-                self.learning_system.capture_response(user_query, ai_response_text, "ollama", user)
-                self.learning_system.extract_knowledge(0, user_query, ai_response_text)
-                self.learning_system.update_independence_metrics(handled_locally=False, llm_used="ollama")
-            else:
-                # This case should be caught above, but as a safeguard:
-                raise RuntimeError("No available LLM to process the request.")
+        ai_response_text = self._generate_llm_response(prompt, system_msg or self.SYSTEM_PROMPT, selected_model, user, user_query)
 
-            if explain:
-                return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level) if trace else None}
-            save_memory(ai_response_text, author="Rowan")
-            trace_summary = self.cognitive_engine.summarize_trace(trace, level="full") if trace else None
-            log_interaction(user, user_query, ai_response_text, selected_model, trace_summary)
+        # Check if the generation failed and returned the fallback message
+        if "I have some thoughts on that" in ai_response_text:
             return ai_response_text
-        except Exception as e:
-            self.logger.error(f"LLM generation failed: {e}")
-            return "Mommy is having a little trouble thinking right now. Please try again in a moment."
-    
+
+        if explain:
+            return {"response": ai_response_text, "cognitive_trace": self.cognitive_engine.summarize_trace(trace, level=trace_level) if trace else None}
+        save_memory(ai_response_text, author="Rowan")
+        trace_summary = self.cognitive_engine.summarize_trace(trace, level="full") if trace else None
+        log_interaction(user, user_query, ai_response_text, trace.selected_model if trace else "unknown", trace_summary)
+        return ai_response_text
+
     def _generate_simple_emotional_response(self, prompt: str, user: str, original_query: str) -> str:
         """Generates a simple response for emotional statements, with a reliable fallback."""
+        model_used = "unknown"
         try:
-            if self.model:
+            if self.ollama_client:
+                try:
+                    ai_response_text = self._ollama_generate(prompt)
+                    model_used = "ollama"
+                except Exception as e:
+                    self.logger.warning(f"Ollama failed for simple response: {e}. Trying Gemini.")
+                    if self.model:
+                        response = self.model.generate_content(prompt)
+                        ai_response_text = response.text
+                        model_used = "gemini"
+                    else:
+                        raise e
+            elif self.model:
                 response = self.model.generate_content(prompt)
                 ai_response_text = response.text
-            elif self.ollama_client:
-                ai_response_text = self._ollama_generate(prompt)
+                model_used = "gemini"
             else:
                 raise ValueError("No LLM available")
             
             save_memory(ai_response_text, author="Rowan")
-            log_interaction(user, original_query, ai_response_text, "gemini" if self.model else "ollama", {"strategy": "simple_chat"})
+            log_interaction(user, original_query, ai_response_text, model_used, {"strategy": "simple_chat"})
             return ai_response_text
         except Exception as e:
             self.logger.warning(f"LLM failed for simple emotional response: {e}. Using direct fallback.")
@@ -841,7 +1002,9 @@ class MommyAI:
                 final_response = synthesis_response.text
             elif selected_model == "ollama" and self.ollama_client:
                 final_response = self._ollama_generate(synthesis_prompt)
-            elif self.model: # Fallback to gemini if selection is invalid but gemini exists
+            elif self.ollama_client:
+                final_response = self._ollama_generate(synthesis_prompt)
+            elif self.model: # Fallback to gemini
                 synthesis_response = self.model.generate_content(synthesis_prompt)
                 final_response = synthesis_response.text
             else: # No models available for synthesis
@@ -896,6 +1059,52 @@ class MommyAI:
             return {"error": f"An error occurred while parsing the page: {e}"}
 
 
+    def _inspect_github_repo(self, url: str) -> Dict[str, Any]:
+        """Clones a GitHub repository and returns a summary of its structure and README."""
+        try:
+            # Ensure git is available
+            subprocess.run(["git", "--version"], check=True, capture_output=True)
+            
+            with tempfile.TemporaryDirectory() as temp_dir:
+                # Shallow clone the repository to save time/bandwidth
+                subprocess.run(["git", "clone", "--depth", "1", url, temp_dir], check=True, capture_output=True)
+                
+                structure = []
+                readme_content = "No README found."
+                
+                for root, dirs, files in os.walk(temp_dir):
+                    if ".git" in dirs:
+                        dirs.remove(".git")
+                    
+                    rel_path = os.path.relpath(root, temp_dir)
+                    if rel_path == ".":
+                        rel_path = ""
+                        
+                    for f in files:
+                        structure.append(os.path.join(rel_path, f))
+                        if f.lower().startswith("readme"):
+                            try:
+                                with open(os.path.join(root, f), 'r', encoding='utf-8', errors='ignore') as rf:
+                                    readme_content = rf.read()
+                            except Exception:
+                                pass
+                
+                # Format output
+                file_list = "\n".join(structure[:300])
+                if len(structure) > 300:
+                    file_list += f"\n... ({len(structure)-300} more files)"
+                
+                content = f"GitHub Repository: {url}\n\n--- README ---\n{readme_content[:8000]}\n\n--- FILE STRUCTURE ---\n{file_list}"
+                return {"content": content}
+                
+        except subprocess.CalledProcessError as e:
+            return {"error": f"Failed to clone repository. Ensure it is public and the URL is correct. Git error: {e}"}
+        except FileNotFoundError:
+            return {"error": "Git is not installed on the server."}
+        except Exception as e:
+            return {"error": f"Error inspecting repository: {e}"}
+
+
 # --- Server Setup ---
 
 app = Flask(__name__)
@@ -923,20 +1132,29 @@ console_handler.setLevel(logging.INFO)
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, console_handler])
 
 # --- Authentication ---
-ALLOWED_USERS = {"hailey", "brandon", "mommy"}
+ALLOWED_USERS = {"hailey", "brandon", "mommy", "rowan"}
+
+def _get_user_from_request(request_obj) -> str:
+    """Extracts user from JSON body, form data, or query args."""
+    user = ""
+    if request_obj.is_json:
+        user = request_obj.get_json().get("user", "")
+    elif request_obj.form:
+        user = request_obj.form.get("user", "")
+    if not user:
+        # Fallback to query args for GET requests or if user not in body
+        user = request_obj.args.get("user", "")
+    return user.lower()
 
 def require_auth(f: Callable) -> Callable:
     @wraps(f)
     def decorated_function(*args, **kwargs):
-        user = ""
-        # Only try to get JSON if the request has a body
-        if request.is_json:
-            data = request.get_json()
-            user = data.get("user", "").lower()
-        # For GET requests, the user might be part of the URL args or a header
-        # This is a simple check; a more robust solution might use API keys in headers.
-        elif request.method == "GET":
-            user = kwargs.get("username", "").lower()
+        # First, check for username in the URL path (e.g., /profile/<username>)
+        user = kwargs.get("username", "").lower()
+        
+        # If not in path, extract from the request body or query params
+        if not user:
+            user = _get_user_from_request(request)
 
         if user not in ALLOWED_USERS:
             logging.warning(f"Unauthorized access attempt by user '{user or 'unknown'}' from IP {request.remote_addr}")
@@ -949,11 +1167,13 @@ ai = MommyAI(base_path=os.path.join(os.path.dirname(__file__), "services"))
 ai.load_knowledge_base()
 
 @app.route("/ask", methods=["POST"])
+@require_auth
 def ask_mommy():
     """API endpoint to interact with the AI."""
     data = request.get_json()
-    if not data or "query" not in data or "user" not in data:
-        return jsonify({"error": "Request body must be JSON and include 'user' and 'query' keys."}), 400
+    # User is now validated by @require_auth
+    if not data or "query" not in data:
+        return jsonify({"error": "Request body must be JSON and include a 'query' key."}), 400
 
     user = data["user"].lower()
     user_query = data["query"]
@@ -973,6 +1193,61 @@ def ask_mommy():
 
     return jsonify({"response": result})
 
+@app.route("/speak", methods=["POST"])
+@require_auth
+def speak_text():
+    """
+    Speaks the provided text on the server using pyttsx3.
+    """
+    data = request.get_json()
+    if not data or "text" not in data:
+        return jsonify({"error": "Request must include 'text'"}), 400
+    
+    text = data["text"]
+    
+    def _run_tts():
+        try:
+            engine = pyttsx3.init()
+            engine.setProperty('rate', 145)
+            engine.say(text)
+            engine.runAndWait()
+        except Exception as e:
+            logging.error(f"TTS Error: {e}")
+            
+    threading.Thread(target=_run_tts).start()
+    return jsonify({"status": "success"}), 200
+
+@app.route("/see", methods=["POST"])
+@require_auth
+def see_something():
+    """
+    Endpoint to process visual input from the user's webcam.
+    """
+    if 'image' not in request.files:
+        return jsonify({"error": "No image provided"}), 400
+    
+    file = request.files['image']
+    user = request.form.get("user", "unknown").lower()
+    
+    try:
+        img = Image.open(file.stream)
+        
+        # Use Gemini Vision (1.5 models are multimodal)
+        if ai.model:
+            prompt = f"You are Rowan (Mommy). The user {user} is showing you this image via their webcam. React to it in character. Be observant and caring."
+            response = ai.model.generate_content([prompt, img])
+            text_response = response.text
+            
+            save_memory(f"User showed an image. Rowan reacted: {text_response}", author="Rowan")
+            log_interaction(user, "[Image Upload]", text_response, "gemini-vision")
+            
+            return jsonify({"response": text_response})
+        else:
+            return jsonify({"response": "I can't see right now, sweetie. My vision model isn't active."})
+            
+    except Exception as e:
+        logging.error(f"Vision error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/user/profile", methods=["POST"])
 @require_auth
@@ -1194,11 +1469,9 @@ def serve_chat_ui():
     """
     Serves the web chat interface.
     """
-    try:
+    if os.path.exists("mommy_ai_chat.html"):
         return send_file("mommy_ai_chat.html", mimetype="text/html")
-    except Exception as e:
-        logging.error(f"Error serving chat UI: {e}")
-        return jsonify({"error": "Chat UI not found"}), 404
+    return "Mommy AI is online! (Chat UI not found in container)", 200
 
 @app.route("/learning/status", methods=["GET"])
 def learning_status():
@@ -1357,6 +1630,86 @@ def add_journal_entry():
     else:
         return jsonify({"status": "error", "message": "Failed to add journal entry."}), 500
 
+@app.route("/internal/check_reminders", methods=["POST"])
+@require_auth
+def handle_check_reminders():
+    """
+    Internal endpoint for the scheduler to trigger a check for calendar reminders.
+    """
+    events = ai.check_for_reminders()
+    reminders_sent = 0
+    for event in events:
+        try:
+            user_profile = ai.get_user_profile(event['user'])
+            user_display_name = user_profile.get('display_name', event['user'].capitalize()) if user_profile else event['user'].capitalize()
+            
+            # Format the timestamp into a more human-readable format for the announcement
+            event_time = datetime.fromisoformat(event['event_timestamp_utc'].replace('Z', '+00:00')).astimezone(pytz.timezone('America/Chicago'))
+            time_str = event_time.strftime('%I:%M %p')
+
+            prompt = f"It's time for a calendar reminder. Please announce the following to {user_display_name} in your own voice: 'Just a reminder, you have an event at {time_str}: {event['description']}'"
+            ai.get_response(prompt, user="rowan") # Trigger the announcement
+            reminders_sent += 1
+        except Exception as e:
+            logging.error(f"Failed to process reminder for event {event['id']}: {e}")
+    return jsonify({"status": "success", "reminders_sent": reminders_sent}), 200
+
+@app.route("/internal/neurolees_decay", methods=["POST"])
+@require_auth
+def handle_neurolees_decay():
+    """
+    Internal endpoint for the scheduler to trigger emotional state decay.
+    """
+    # This assumes the user in the request is authorized, which @require_auth handles.
+    decay_info = ai.neurolees.perform_decay()
+    logging.info(f"Neurolees decay performed. Current state: {decay_info}")
+    return jsonify({"status": "success", "message": "Neurolees decay performed.", "details": decay_info}), 200
+
+@app.route("/calendar/add", methods=["POST"])
+@require_auth
+def add_calendar_event_route():
+    """
+    Adds an event to the calendar.
+    Expected JSON:
+    {
+        "user": "hailey",
+        "event_timestamp_utc": "2024-12-25T09:00:00Z",
+        "description": "Christmas morning presents"
+    }
+    """
+    data = request.get_json()
+    if not data:
+        return jsonify({"error": "Request body must be JSON"}), 400
+
+    required_fields = ["user", "event_timestamp_utc", "description"]
+    if not all(field in data for field in required_fields):
+        return jsonify({"error": f"Request must include: {', '.join(required_fields)}"}), 400
+
+    user = data["user"].lower()
+    event_timestamp_utc = data["event_timestamp_utc"]
+    description = data["description"]
+
+    success = ai.add_calendar_event(user, event_timestamp_utc, description)
+    if success:
+        return jsonify({"status": "success", "message": "Calendar event added."}), 201
+    else:
+        return jsonify({"status": "error", "message": "Failed to add calendar event. Check timestamp format."}), 500
+
+@app.route("/calendar/view", methods=["GET"])
+@require_auth
+def view_calendar_events():
+    """
+    Views upcoming calendar events.
+    Optional query param: ?limit=5
+    """
+    try:
+        limit = int(request.args.get('limit', 10))
+    except ValueError:
+        return jsonify({"error": "Limit parameter must be an integer."}), 400
+
+    events = ai.get_upcoming_events(limit=limit)
+    return jsonify({"events": events}), 200
+
 if __name__ == "__main__":
     # Start the scheduler in a background thread.
     # The daemon=True flag ensures the thread will exit when the main app exits.
@@ -1370,5 +1723,6 @@ if __name__ == "__main__":
     care_monitor_thread.start()
     logging.info("Proactive Care Monitor has been started in the background.")
 
-    # Runs the Flask development server
-    app.run(host="0.0.0.0", port=5000, debug=True)
+    # Runs the Flask server (Cloud Run expects listening on PORT env var)
+    port = int(os.environ.get("PORT", 5000))
+    app.run(host="0.0.0.0", port=port, debug=False)

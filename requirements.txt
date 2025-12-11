@@ -7,12 +7,13 @@ pytz
 requests
 pyttsx3
 SpeechRecognition
+PyAudio
 
 # Dependencies from services/requirements.txt for web scraping/automation
-undetected-chromedriver
 beautifulsoup4
-selenium
 pytesseract
 Pillow
 pydantic
 lxml
+#undetected-chromedriver
+#selenium

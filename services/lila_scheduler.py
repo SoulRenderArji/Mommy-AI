@@ -5,6 +5,7 @@ import os
 import requests
 import logging
 from dotenv import load_dotenv
+from services import mortality_service
 
 # Load environment variables from .env file
 load_dotenv()
@@ -16,6 +17,8 @@ logger = logging.getLogger(__name__)
 TIMEZONE = pytz.timezone('America/Chicago')
 API_BASE_URL = os.getenv("MOMMY_API_URL", "http://127.0.0.1:5000")
 API_URL = f"{API_BASE_URL}/ask"
+REMINDER_API_URL = f"{API_BASE_URL}/internal/check_reminders" # Internal endpoint
+NEUROLEES_API_URL = f"{API_BASE_URL}/internal/neurolees_decay" # Internal endpoint for emotional decay
 
 # The scheduler's messages are now prompts for the AI, not direct announcements.
 SCHEDULE = [
@@ -46,6 +49,31 @@ def trigger_ai_announcement(message: str):
         logger.error(f"Could not contact main AI server: {e}")
         return False
 
+def check_for_reminders():
+    """Asks the main AI server to check for and handle calendar reminders."""
+    try:
+        # This is an internal call, so we can use a simple payload.
+        # The main server handles the logic.
+        payload = {"user": "rowan"} # Auth user
+        response = requests.post(REMINDER_API_URL, json=payload)
+        response.raise_for_status()
+        reminders_sent = response.json().get("reminders_sent", 0)
+        if reminders_sent > 0:
+            logger.info(f"Successfully triggered {reminders_sent} calendar reminder(s).")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Could not trigger reminder check on main AI server: {e}")
+
+def trigger_neurolees_decay():
+    """Asks the main server to process emotional decay."""
+    try:
+        payload = {"user": "rowan"} # Auth user
+        response = requests.post(NEUROLEES_API_URL, json=payload)
+        response.raise_for_status()
+        logger.debug("Neurolees emotional decay processed.")
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Could not trigger neurolees decay on main AI server: {e}")
+
+
 def run_scheduler():
     """
     Runs a continuous loop to check the time and trigger AI announcements.
@@ -57,6 +85,9 @@ def run_scheduler():
     logger.info("Lila 24/7 ON — Mommy never sleeps. 🕰️")
 
     last_triggered_minute = -1
+    last_reminder_check_minute = -1
+    last_mortality_check_hour = -1
+    last_decay_check_minute = -1
 
     while True:
         try:
@@ -79,6 +110,23 @@ def run_scheduler():
                         last_triggered_minute = current_minute
                         break # Move to next minute once a task is found
             
+            # Check for reminders every 5 minutes
+            if now.minute % 5 == 0 and now.minute != last_reminder_check_minute:
+                logger.info("Checking for upcoming calendar events...")
+                check_for_reminders()
+                last_reminder_check_minute = now.minute
+            
+            # Process emotional decay every 10 minutes
+            if now.minute % 10 == 0 and now.minute != last_decay_check_minute:
+                trigger_neurolees_decay()
+                last_decay_check_minute = now.minute
+            
+            # Check mortality once per hour
+            if now.hour != last_mortality_check_hour:
+                logger.debug("Performing hourly mortality check...")
+                mortality_service.check_mortality(os.path.dirname(__file__))
+                last_mortality_check_hour = now.hour
+
             # Sleep until the start of the next minute
             time.sleep(60 - now.second)
 
